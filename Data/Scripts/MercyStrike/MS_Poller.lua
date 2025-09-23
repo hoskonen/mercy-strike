@@ -1,23 +1,37 @@
--- Scripts/MercyStrike/MS_Poller.lua  (Lua 5.1, multi-channel)
+-- MS_Poller.lua (Lua 5.1)
 MS_Poller = MS_Poller or {}
 local P = MS_Poller
+P._ids = P._ids or {}
 
-P._ids = P._ids or {} -- name -> timerId
+local function Log(s) System.LogAlways("[MercyStrike] " .. tostring(s)) end
 
-local function Log(msg) System.LogAlways("[MercyStrike] " .. tostring(msg)) end
+-- simple per-channel error dedupe
+local _lastErr = {}
 
--- Start a repeating poll under a channel name
 function P.StartNamed(name, intervalMs, fn, runImmediately)
     P.StopNamed(name)
-    if runImmediately then
-        local ok, err = pcall(fn)
-        if not ok then Log("poller[" .. name .. "] immediate error: " .. tostring(err)) end
-    end
+
     local function wrapped()
-        local ok, err = pcall(fn)
-        if not ok then Log("poller[" .. name .. "] runtime error: " .. tostring(err)) end
+        local ok, err = xpcall(fn, debug.traceback)
+        if not ok then
+            if _lastErr[name] ~= err then
+                _lastErr[name] = err
+                Log("poller[" .. name .. "] runtime error:\n" .. tostring(err))
+            end
+        end
         P._ids[name] = Script.SetTimer(intervalMs, wrapped)
     end
+
+    if runImmediately then
+        local ok, err = xpcall(fn, debug.traceback)
+        if not ok then
+            if _lastErr[name] ~= err then
+                _lastErr[name] = err
+                Log("poller[" .. name .. "] immediate error:\n" .. tostring(err))
+            end
+        end
+    end
+
     P._ids[name] = Script.SetTimer(intervalMs, wrapped)
     Log("poller[" .. name .. "] started (" .. tostring(intervalMs) .. " ms)")
 end
@@ -31,7 +45,6 @@ function P.StopNamed(name)
     end
 end
 
--- Back-compat single-channel helpers
 function P.Start(intervalMs, fn, runImmediately) P.StartNamed("__default", intervalMs, fn, runImmediately) end
 
 function P.Stop() P.StopNamed("__default") end

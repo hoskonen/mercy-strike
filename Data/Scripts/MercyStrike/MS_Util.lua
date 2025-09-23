@@ -34,12 +34,9 @@ end
 -- ✅ Clean hostile check: AI.Hostile first; (optional) law status is commented for now
 function MS.IsHostileToPlayer(e)
     local p = MS.GetPlayer and MS.GetPlayer()
-    if not (e and p and e.id and p.id) then return false end
-    if AI and AI.Hostile then
-        local ok1, r1 = pcall(AI.Hostile, p.id, e.id); if ok1 and r1 then return true end
-        local ok2, r2 = pcall(AI.Hostile, e.id, p.id); if ok2 and r2 then return true end
-    end
-    local ef, pf
+    if not (e and p) then return false end
+
+    local ef, pf = nil, nil
     if e.GetFaction then
         local ok, v = pcall(e.GetFaction, e); if ok then ef = v end
     end
@@ -47,9 +44,24 @@ function MS.IsHostileToPlayer(e)
         local ok, v = pcall(p.GetFaction, p); if ok then pf = v end
     end
     if ef and pf and ef ~= pf then return true end
-    if e.WasRecentlyDamagedByPlayer and type(e.WasRecentlyDamagedByPlayer) == "function" then
-        local ok, res = pcall(e.WasRecentlyDamagedByPlayer, e, 3.0); if ok and res then return true end
+
+    local w = MS.GetEntityWuid and MS.GetEntityWuid(e)
+    if w and RPG and RPG.IsPublicEnemy then
+        local ok, res = pcall(RPG.IsPublicEnemy, w)
+        if ok and res then return true end
     end
+
+    if e.WasRecentlyDamagedByPlayer and type(e.WasRecentlyDamagedByPlayer) == "function" then
+        local ok, res = pcall(e.WasRecentlyDamagedByPlayer, e, 4.0)
+        if ok and res then return true end
+    end
+
+    local s = e.soul
+    if s and s.IsInCombatDanger and type(s.IsInCombatDanger) == "function" then
+        local ok, v = pcall(s.IsInCombatDanger, s)
+        if ok and (v == true or v == 1) then return true end
+    end
+
     return false
 end
 
@@ -137,11 +149,14 @@ function MS.ScanSoulsInSphere(radiusM, maxList)
     local out = {}
     for i = 1, #iter do
         local e = iter[i]
-        if e and e ~= p and e.soul and e.GetWorldPos then
-            local w = e:GetWorldPos()
-            local inside = System.GetEntitiesInSphere or
-                ((pos.x - w.x) ^ 2 + (pos.y - w.y) ^ 2 + (pos.z - w.z) ^ 2 <= r2)
-            if inside then out[#out + 1] = { e = e } end
+        if e and e ~= p and e.soul then
+            local okPos, w = pcall(function() return e:GetWorldPos() end)
+            if okPos and w then
+                local dx, dy, dz = pos.x - w.x, pos.y - w.y, pos.z - w.z
+                if System.GetEntitiesInSphere or (dx * dx + dy * dy + dz * dz <= r2) then
+                    out[#out + 1] = { e = e } -- keep the record minimal
+                end
+            end
         end
     end
     if maxList and #out > maxList then

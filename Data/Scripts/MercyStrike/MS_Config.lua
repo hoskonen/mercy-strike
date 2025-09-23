@@ -9,6 +9,7 @@ local DEFAULT = {
     -- Scan
     scanRadiusM     = 10.0,
     maxList         = 48,
+    useAIHostile    = false,
 
     -- scan budget
     maxPerTick      = 8,   -- scan at most N NPCs per combat tick
