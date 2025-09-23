@@ -14,9 +14,13 @@ function P.StartNamed(name, intervalMs, fn, runImmediately)
     local function wrapped()
         local ok, err = xpcall(fn, debug.traceback)
         if not ok then
-            if _lastErr[name] ~= err then
-                _lastErr[name] = err
-                Log("poller[" .. name .. "] runtime error:\n" .. tostring(err))
+            local step = rawget(_G, "_dbg_ms_step")
+            local note = rawget(_G, "_dbg_ms_note")
+            local extra = (step and (" [step " .. tostring(step) .. "]")) or ""
+            if note and note ~= "" then extra = extra .. " (" .. tostring(note) .. ")" end
+            if _lastErr[name] ~= (err .. extra) then
+                _lastErr[name] = err .. extra
+                Log("poller[" .. name .. "] runtime error:" .. extra .. "\n" .. tostring(err))
             end
         end
         P._ids[name] = Script.SetTimer(intervalMs, wrapped)

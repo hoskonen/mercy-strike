@@ -125,18 +125,22 @@ end
 
 function MS.IsInCombat()
     local p = MS.GetPlayer(); if not p then return false end
-    local soul = p.soul
-    if soul and type(soul.IsInCombatDanger) == "function" then
-        local ok, v = pcall(soul.IsInCombatDanger, soul)
-        if ok and (v == 1 or v == true) then return true end
+    local s = p.soul
+    if s and type(s.IsInCombatDanger) == "function" then
+        local ok, v = pcall(s.IsInCombatDanger, s)
+        return ok and (v == 1 or v == true) or false
     end
     return false
 end
 
 function MS.PrettyName(e)
     if not e then return "<nil>" end
-    local nm = (e.GetName and e:GetName()) or e.class or "entity"
-    return tostring(nm)
+    local nm = "<entity>"
+    if e.GetName then
+        local ok, n = pcall(e.GetName, e)
+        if ok and n then nm = n end
+    end
+    return tostring(nm or "<entity>")
 end
 
 -- Add this new scan that only returns entities with a soul (actors/NPCs)
@@ -163,4 +167,66 @@ function MS.ScanSoulsInSphere(radiusM, maxList)
         local trimmed = {}; for i = 1, maxList do trimmed[i] = out[i] end; return trimmed
     end
     return out
+end
+
+local MS = MercyStrike
+
+-- Best-effort: try multiple APIs to read Warfare, clamp to [0..cap]
+function MS.GetWarfareLevel()
+    local p = MS.GetPlayer and MS.GetPlayer()
+    if not p then return 0 end
+    local s = p.soul
+    local id = (MS.config and MS.config.skillIdWarfare) or "warfare"
+
+    -- soul methods we’ve seen across projects
+    local function trySoul(method)
+        if s and type(s[method]) == "function" then
+            local ok, val = pcall(s[method], s, id)
+            if ok and type(val) == "number" then return val end
+        end
+    end
+    local v = trySoul("GetSkillLevel") or trySoul("GetLevelOfSkill") or trySoul("GetStatLevel")
+    if v then return math.max(0, v) end
+
+    -- RPG global variants (project-dependent)
+    if RPG then
+        if type(RPG.GetSkillLevel) == "function" then
+            local ok, val = pcall(RPG.GetSkillLevel, id)
+            if ok and type(val) == "number" then return math.max(0, val) end
+        end
+        if type(RPG.GetSkill) == "function" then
+            local ok, sk = pcall(RPG.GetSkill, id)
+            if ok and sk and type(sk.GetLevel) == "function" then
+                local ok2, val = pcall(sk.GetLevel, sk)
+                if ok2 and type(val) == "number" then return math.max(0, val) end
+            end
+        end
+    end
+
+    return 0
+end
+
+-- Compute effective KO chance with optional Warfare scaling
+function MS.GetEffectiveApplyChance()
+    local cfg   = MS.config or {}
+    local base  = tonumber(cfg.applyBaseChance) or 0.05
+    local bonus = tonumber(cfg.applyBonusAtCap) or 0.15
+    local cap   = tonumber(cfg.skillCap) or 30
+    local maxC  = tonumber(cfg.applyChanceMax) or 0.99
+
+    if not cfg.scaleWithWarfare then
+        if base > maxC then base = maxC end
+        if base < 0 then base = 0 end
+        return base, 0
+    end
+
+    local level = tonumber(MS.GetWarfareLevel()) or 0
+    if level < 0 then level = 0 end
+    local t = (cap > 0) and (level / cap) or 0
+    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+
+    local chance = base + t * bonus
+    if chance > maxC then chance = maxC end
+    if chance < 0 then chance = 0 end
+    return chance, level
 end

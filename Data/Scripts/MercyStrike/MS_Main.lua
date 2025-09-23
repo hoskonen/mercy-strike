@@ -29,69 +29,53 @@ local function armCooldown(e, tnow)
     rescanUntil[e.id] = tnow + cd
 end
 
-local _onceErr = {} -- step -> true (log each failure only once)
-
-local function onceErr(step, msg)
-    if not _onceErr[step] then
-        _onceErr[step] = true
-        MS.LogCore("ERR: step=" .. tostring(step) .. " " .. tostring(msg or ""))
-    end
-end
-
 local function CombatTick()
-    -- fence: IsInCombat
-    local okIC, inCombat = pcall(MS.IsInCombat)
-    if not okIC then
-        onceErr("IsInCombat", "pcall failed"); return
-    end
-    if not inCombat then
-        StopCombatPoller(); return
-    end
+    -- trust world detector; don't call IsInCombat() here
+    if not combatActive then return end
 
-    -- config
     local cfg = MS.config or {}
-    local radius = cfg.scanRadiusM or 10.0
-    local maxList = cfg.maxList or 48
+
+    -- souls-only scan; pcall in case scene is hot-swapping entities
+    local listOk, list = pcall(MS.ScanSoulsInSphere, cfg.scanRadiusM or 10.0, cfg.maxList or 48)
+    if not listOk or type(list) ~= "table" or #list == 0 then return end
+
     local maxN = tonumber(cfg.maxPerTick) or 8
+    local seen = 0
     local tnow = nowSec()
 
-    -- scan (souls only)
-    local listOk, list = pcall(MS.ScanSoulsInSphere, radius, maxList)
-    if not listOk then
-        onceErr("ScanSoulsInSphere", list); return
-    end
-    if type(list) ~= "table" or #list == 0 then return end
-
-    local seen = 0
     for i = 1, #list do
         if seen >= maxN then break end
 
-        local rec = list[i]; local e = rec and rec.e
+        local rec = list[i]
+        local e   = rec and rec.e
         if e then
             local name = (MS.PrettyName and MS.PrettyName(e)) or "<entity>"
 
-            -- animal gate
+            -- animal gate (optional)
             local animal = false
             if not cfg.includeAnimals then
-                local aOk, aVal = pcall(MS.IsAnimalByName, e)
-                if not aOk then
-                    onceErr("IsAnimalByName", "name=" .. name)
-                    animal = true
-                else
-                    animal = not not aVal
+                local okA, isAnimal = pcall(MS.IsAnimalByName, e)
+                animal = (not okA) and true or (not not isAnimal)
+                if animal and cfg.logging and cfg.logging.probe then
+                    MS.LogSkip("skip animal name=" .. name)
                 end
             end
 
             if not animal then
-                -- hostile gate
+                -- hostile gate (UH-style: faction/publicEnemy/aggression/soul-combat)
                 local hostile = true
                 if cfg.onlyHostile then
-                    local hOk, hVal = pcall(MS.IsHostileToPlayer, e)
-                    if not hOk then
-                        onceErr("IsHostileToPlayer", "name=" .. name)
+                    local okH, resH = pcall(MS.IsHostileToPlayer, e)
+                    if not okH then
+                        if cfg.logging and cfg.logging.core then
+                            MS.LogCore("ERR: step=IsHostileToPlayer name=" .. name)
+                        end
                         hostile = false
                     else
-                        hostile = not not hVal
+                        hostile = not not resH
+                        if (not hostile) and cfg.logging and cfg.logging.probe then
+                            MS.LogSkip("skip notHostile name=" .. name)
+                        end
                     end
                 end
 
@@ -102,42 +86,73 @@ local function CombatTick()
                         seen = seen + 1
 
                         -- HP
-                        local hpOk, hp = pcall(MS.GetNormalizedHp, e)
-                        if not hpOk then
-                            onceErr("GetNormalizedHp", "name=" .. name)
+                        local okHP, hp = pcall(MS.GetNormalizedHp, e)
+                        if not okHP then
+                            if cfg.logging and cfg.logging.core then
+                                MS.LogCore("ERR: step=GetNormalizedHp name=" .. name)
+                            end
                         else
                             if MS.LogProbe and cfg.logging and cfg.logging.probe then
                                 MS.LogProbe(string.format("name=%s hp=%.3f", name, hp or -1))
                             end
 
                             if (hp or 1) <= (cfg.hpThreshold or 0.12) then
-                                -- chance + apply
-                                if math.random() < (cfg.applyChance or 0.20) then
+                                -- chance + apply (single-lane soul:AddBuff)
+
+                                local chance, warfare = MS.GetEffectiveApplyChance()
+                                if MS.LogProbe and cfg.logging and cfg.logging.probe then
+                                    MS.LogProbe(string.format("chance=%.3f warfare=%d", chance, warfare))
+                                end
+
+                                if math.random() < chance then
                                     local applied = false
                                     if MS_Unconscious and MS_Unconscious.Apply then
-                                        local okApply, res = pcall(MS_Unconscious.Apply, e,
+                                        local okA, resA = pcall(MS_Unconscious.Apply, e,
                                             cfg.buffId or "unconscious_permanent")
-                                        applied = okApply and res
-                                        if not okApply then onceErr("Unconscious.Apply", "name=" .. name) end
+                                        applied = okA and resA or false
+                                        if (not okA) and cfg.logging and cfg.logging.core then
+                                            MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
+                                        end
                                     end
                                     if applied then
                                         MS.LogApply("KO applied '" .. tostring(cfg.buffId or "unconscious_permanent") ..
                                             "' name=" .. name ..
-                                            " hp=" .. string.format("%.2f", hp or -1))
+                                            " hp=" .. string.format("%.2f", hp or -1) ..
+                                            " (warfare=" ..
+                                            tostring(warfare) .. ", p=" .. string.format("%.2f", chance) .. ")")
                                     elseif cfg.logging and cfg.logging.probe then
                                         MS.LogSkip("apply fail name=" .. name)
                                     end
-                                elseif cfg.logging and cfg.logging.probe then
-                                    MS.LogSkip("roll failed name=" .. name)
+                                else
+                                    if cfg.logging and cfg.logging.probe then
+                                        MS.LogSkip("roll failed name=" .. name)
+                                    end
                                 end
+
+                                local applied = false
+                                if MS_Unconscious and MS_Unconscious.Apply then
+                                    local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                        cfg.buffId or "unconscious_permanent")
+                                    applied = okA and resA or false
+                                    if (not okA) and cfg.logging and cfg.logging.core then
+                                        MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
+                                    end
+                                end
+
+                                if applied then
+                                    MS.LogApply("KO applied '" .. tostring(cfg.buffId or "unconscious_permanent") ..
+                                        "' name=" .. name ..
+                                        " hp=" .. string.format("%.2f", hp or -1))
+                                elseif cfg.logging and cfg.logging.probe then
+                                    MS.LogSkip("apply fail name=" .. name)
+                                end
+                            elseif cfg.logging and cfg.logging.probe then
+                                MS.LogSkip("roll failed name=" .. name)
                             end
                         end
-                    end -- cooldown
-                elseif cfg.logging and cfg.logging.probe then
-                    MS.LogSkip("skip notHostile name=" .. name)
+                    end
                 end
-            elseif cfg.logging and cfg.logging.probe then
-                MS.LogSkip("skip animal name=" .. name)
+                -- else: still in rescan cooldown → silent skip
             end
         end
     end
@@ -145,10 +160,6 @@ end
 
 local function StartCombatPoller()
     if combatActive then return end
-    -- double-check combat *now* before arming
-    local ok, inCombat = pcall(MS.IsInCombat)
-    if not ok or not inCombat then return end
-
     combatActive = true
     local ms = tonumber(MS.config and MS.config.pollCombatMs) or 500
     MS.LogCore("combat detected → starting combat poller @" .. tostring(ms) .. " ms")

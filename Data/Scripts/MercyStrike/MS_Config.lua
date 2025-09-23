@@ -2,33 +2,39 @@
 
 local DEFAULT = {
     -- Polling (ms)
-    pollWorldMs     = 3500, -- slow outer poller (detect combat)
-    pollCombatMs    = 500,  -- fast inner poller (in combat)
-    enabled         = true,
+    pollWorldMs      = 3500, -- slow outer poller (detect combat)
+    pollCombatMs     = 500,  -- fast inner poller (in combat)
+    enabled          = true,
 
     -- Scan
-    scanRadiusM     = 10.0,
-    maxList         = 48,
-    useAIHostile    = false,
+    scanRadiusM      = 10.0,
+    maxList          = 48,
+    useAIHostile     = false,
 
     -- scan budget
-    maxPerTick      = 8,   -- scan at most N NPCs per combat tick
-    rescanCooldownS = 3.0, -- don't re-check the same NPC again for this many seconds
+    maxPerTick       = 8,   -- scan at most N NPCs per combat tick
+    rescanCooldownS  = 3.0, -- don't re-check the same NPC again for this many seconds
 
     -- Filters
-    onlyHostile     = true,
-    onlyWithSoul    = true,
-    includeAnimals  = false,
+    onlyHostile      = true,
+    onlyWithSoul     = true,
+    includeAnimals   = false,
 
-    -- KO rule
-    hpThreshold     = 0.12,
-    applyChance     = 0.20,
+    -- KO probability (scales with Warfare)
+    applyBaseChance  = 0.05, -- 5% at Warfare 0
+    applyBonusAtCap  = 0.15, -- +15% at Warfare cap → total 20% at cap
+    skillCap         = 30,   -- Warfare level cap used for scaling
+    skillIdWarfare   = "fencing",
+    scaleWithWarfare = true, -- set false to freeze chance to applyBaseChance
+
+    -- hard cap (safety; optional)
+    applyChanceMax   = 0.50, -- don’t exceed 50% total (tweak if you like)
 
     -- Buff to apply
-    buffId          = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
-    buffDuration    = -1,
+    buffId           = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
+    buffDuration     = -1,
 
-    logging         = { core = true, probe = true, apply = true, skip = true },
+    logging          = { core = true, probe = true, apply = true, skip = true },
 }
 
 local function copyTbl(src)
