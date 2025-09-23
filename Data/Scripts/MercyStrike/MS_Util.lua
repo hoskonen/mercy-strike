@@ -1,4 +1,4 @@
--- Scripts/MercyStrike/MS_Util.lua  (Lua 5.1)
+-- Scripts/MercyStrike/MS_Util.lua  (Lua 5.1, clean)
 
 local MS = MercyStrike
 
@@ -31,12 +31,13 @@ function MS.IsAnimalByName(e)
         true or false
 end
 
+-- ✅ Clean hostile check: AI.Hostile first; (optional) law status is commented for now
 function MS.IsHostileToPlayer(e)
-    local p = MS.GetPlayer(); if not (e and p) then return false end
-    for _, fn in ipairs({ "IsHostileTo", "IsHostile", "IsEnemyTo", "IsEnemy", "IsAggressiveTo" }) do
-        local f = e[fn]; if type(f) == "function" then
-            local ok, res = pcall(f, e, p); if ok and res then return true end
-        end
+    local p = MS.GetPlayer and MS.GetPlayer()
+    if not (e and p and e.id and p.id) then return false end
+    if AI and AI.Hostile then
+        local ok1, r1 = pcall(AI.Hostile, p.id, e.id); if ok1 and r1 then return true end
+        local ok2, r2 = pcall(AI.Hostile, e.id, p.id); if ok2 and r2 then return true end
     end
     local ef, pf
     if e.GetFaction then
@@ -67,8 +68,9 @@ function MS.ScanNearbyOnce(radiusM, maxList)
     for i = 1, #iter do
         local e = iter[i]
         if e and e.GetWorldPos and e ~= p then
-            local inside = System.GetEntitiesInSphere or (dist2(pos, e:GetWorldPos()) <= r2)
-            if inside then out[#out + 1] = { e = e, d2 = dist2(pos, e:GetWorldPos()) } end
+            local wpos = e:GetWorldPos()
+            local inside = System.GetEntitiesInSphere or (dist2(pos, wpos) <= r2)
+            if inside then out[#out + 1] = { e = e, d2 = dist2(pos, wpos) } end
         end
     end
     table.sort(out, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
@@ -78,25 +80,34 @@ function MS.ScanNearbyOnce(radiusM, maxList)
     return out
 end
 
+-- Strong 0..1 health (soul/actor/max fallbacks). Single definition.
 function MS.GetNormalizedHp(e)
-    local soul = e and e.soul
-    if soul and type(soul.GetHealth) == "function" then
-        local okH, hp = pcall(soul.GetHealth, soul)
-        local okM, m = pcall(soul.GetHealthMax, soul)
-        if okH and okM and m and m > 0 then return math.max(0, math.min(1, hp / m)) end
+    if not e then return 1.0 end
+    local s = e.soul
+    if s and s.GetHealth then
+        local okH, H = pcall(s.GetHealth, s)
+        local okM, M = pcall(s.GetHealthMax, s)
+        if okH and okM and M and M > 0 then return math.max(0, math.min(1, H / M)) end
+        if okH and H and H >= 0 and H <= 1 then return H end
+        if e.actor and e.actor.GetMaxHealth then
+            local okMm, Mm = pcall(e.actor.GetMaxHealth, e.actor)
+            if okH and okMm and Mm and Mm > 0 then return math.max(0, math.min(1, H / Mm)) end
+        end
     end
-    if e and e.GetHealth then
-        local okH, hp = pcall(e.GetHealth, e)
-        if okH then
-            if hp > 0 and hp <= 1.0 then return hp end
-            if e.GetMaxHealth then
-                local okM, m = pcall(e.GetMaxHealth, e); if okM and m and m > 0 then
-                    return math.max(0, math.min(1, hp /
-                        m))
+    local a = e.actor
+    if a and a.GetHealth then
+        local okH, H = pcall(a.GetHealth, a)
+        if okH and H then
+            if H >= 0 and H <= 1 then return H end
+            if a.GetMaxHealth then
+                local okM, M = pcall(a.GetMaxHealth, a); if okM and M and M > 0 then
+                    return math.max(0,
+                        math.min(1, H / M))
                 end
             end
         end
     end
+    if e.health01 then return math.max(0, math.min(1, e.health01)) end
     return 1.0
 end
 
@@ -108,4 +119,33 @@ function MS.IsInCombat()
         if ok and (v == 1 or v == true) then return true end
     end
     return false
+end
+
+function MS.PrettyName(e)
+    if not e then return "<nil>" end
+    local nm = (e.GetName and e:GetName()) or e.class or "entity"
+    return tostring(nm)
+end
+
+-- Add this new scan that only returns entities with a soul (actors/NPCs)
+function MS.ScanSoulsInSphere(radiusM, maxList)
+    local p = MS.GetPlayer(); if not (p and p.GetWorldPos) then return {} end
+    local pos = p:GetWorldPos()
+    local iter = (System.GetEntitiesInSphere and System.GetEntitiesInSphere(pos, radiusM or 8.0)) or System.GetEntities()
+    if not iter then return {} end
+    local r2 = (radiusM or 8.0) ^ 2
+    local out = {}
+    for i = 1, #iter do
+        local e = iter[i]
+        if e and e ~= p and e.soul and e.GetWorldPos then
+            local w = e:GetWorldPos()
+            local inside = System.GetEntitiesInSphere or
+                ((pos.x - w.x) ^ 2 + (pos.y - w.y) ^ 2 + (pos.z - w.z) ^ 2 <= r2)
+            if inside then out[#out + 1] = { e = e } end
+        end
+    end
+    if maxList and #out > maxList then
+        local trimmed = {}; for i = 1, maxList do trimmed[i] = out[i] end; return trimmed
+    end
+    return out
 end

@@ -1,32 +1,39 @@
--- Lua 5.1, no goto
+-- Scripts/MercyStrike/MS_Poller.lua  (Lua 5.1, multi-channel)
 MS_Poller = MS_Poller or {}
-MS_Poller._id = nil
+local P = MS_Poller
 
-local function Log(msg) System.LogAlways("[MS] " .. tostring(msg)) end
+P._ids = P._ids or {} -- name -> timerId
 
--- Start a repeating poll; if runImmediately==true, call fn once right away
-function MS_Poller.Start(intervalMs, fn, runImmediately)
-    MS_Poller.Stop()
+local function Log(msg) System.LogAlways("[MercyStrike] " .. tostring(msg)) end
+
+-- Start a repeating poll under a channel name
+function P.StartNamed(name, intervalMs, fn, runImmediately)
+    P.StopNamed(name)
     if runImmediately then
         local ok, err = pcall(fn)
-        if not ok then Log("poller immediate call error: " .. tostring(err)) end
+        if not ok then Log("poller[" .. name .. "] immediate error: " .. tostring(err)) end
     end
     local function wrapped()
         local ok, err = pcall(fn)
-        if not ok then Log("poller runtime error: " .. tostring(err)) end
-        MS_Poller._id = Script.SetTimer(intervalMs, wrapped)
+        if not ok then Log("poller[" .. name .. "] runtime error: " .. tostring(err)) end
+        P._ids[name] = Script.SetTimer(intervalMs, wrapped)
     end
-    MS_Poller._id = Script.SetTimer(intervalMs, wrapped)
-    Log("poller started (" .. tostring(intervalMs) .. " ms)")
+    P._ids[name] = Script.SetTimer(intervalMs, wrapped)
+    Log("poller[" .. name .. "] started (" .. tostring(intervalMs) .. " ms)")
 end
 
-function MS_Poller.Stop()
-    local id = MS_Poller._id
+function P.StopNamed(name)
+    local id = P._ids[name]
     if id then
         Script.KillTimer(id)
-        MS_Poller._id = nil
-        System.LogAlways("[MS] poller stopped")
+        P._ids[name] = nil
+        System.LogAlways("[MercyStrike] poller[" .. name .. "] stopped")
     end
 end
 
-return MS_Poller
+-- Back-compat single-channel helpers
+function P.Start(intervalMs, fn, runImmediately) P.StartNamed("__default", intervalMs, fn, runImmediately) end
+
+function P.Stop() P.StopNamed("__default") end
+
+return P
