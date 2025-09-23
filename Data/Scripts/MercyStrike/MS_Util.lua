@@ -174,59 +174,122 @@ local MS = MercyStrike
 -- Best-effort: try multiple APIs to read Warfare, clamp to [0..cap]
 function MS.GetWarfareLevel()
     local p = MS.GetPlayer and MS.GetPlayer()
-    if not p then return 0 end
-    local s = p.soul
-    local id = (MS.config and MS.config.skillIdWarfare) or "warfare"
-
-    -- soul methods we’ve seen across projects
-    local function trySoul(method)
-        if s and type(s[method]) == "function" then
-            local ok, val = pcall(s[method], s, id)
-            if ok and type(val) == "number" then return val end
-        end
+    local s = p and p.soul
+    local id = (MS.config and MS.config.skillIdWarfare) or "fencing"
+    if s and s.GetSkillLevel then
+        local ok, v = pcall(s.GetSkillLevel, s, id) -- official API
+        if ok and type(v) == "number" then return math.max(0, v) end
     end
-    local v = trySoul("GetSkillLevel") or trySoul("GetLevelOfSkill") or trySoul("GetStatLevel")
-    if v then return math.max(0, v) end
-
-    -- RPG global variants (project-dependent)
-    if RPG then
-        if type(RPG.GetSkillLevel) == "function" then
-            local ok, val = pcall(RPG.GetSkillLevel, id)
-            if ok and type(val) == "number" then return math.max(0, val) end
-        end
-        if type(RPG.GetSkill) == "function" then
-            local ok, sk = pcall(RPG.GetSkill, id)
-            if ok and sk and type(sk.GetLevel) == "function" then
-                local ok2, val = pcall(sk.GetLevel, sk)
-                if ok2 and type(val) == "number" then return math.max(0, val) end
-            end
-        end
-    end
-
     return 0
 end
 
 -- Compute effective KO chance with optional Warfare scaling
 function MS.GetEffectiveApplyChance()
-    local cfg   = MS.config or {}
-    local base  = tonumber(cfg.applyBaseChance) or 0.05
-    local bonus = tonumber(cfg.applyBonusAtCap) or 0.15
-    local cap   = tonumber(cfg.skillCap) or 30
-    local maxC  = tonumber(cfg.applyChanceMax) or 0.99
-
+    local cfg  = MS.config or {}
+    local base = tonumber(cfg.applyBaseChance) or 0.05
     if not cfg.scaleWithWarfare then
-        if base > maxC then base = maxC end
-        if base < 0 then base = 0 end
-        return base, 0
+        if cfg.applyChanceMax then base = math.min(base, cfg.applyChanceMax) end
+        return math.max(0, base), 0
     end
 
-    local level = tonumber(MS.GetWarfareLevel()) or 0
-    if level < 0 then level = 0 end
-    local t = (cap > 0) and (level / cap) or 0
-    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+    local bonus = tonumber(cfg.applyBonusAtCap) or 0.15
+    local cap   = tonumber(cfg.skillCap) or 30
+    local lvl   = MS.GetWarfareLevel()
+    local t     = (cap > 0) and math.min(1, math.max(0, lvl / cap)) or 0
+    local ch    = base + t * bonus
+    local maxC  = tonumber(cfg.applyChanceMax) or 0.99
+    ch          = math.max(0, math.min(ch, maxC))
+    return ch, lvl
+end
 
-    local chance = base + t * bonus
-    if chance > maxC then chance = maxC end
-    if chance < 0 then chance = 0 end
-    return chance, level
+function MS.ClampHealthPostKO(e)
+    local cfg = MercyStrike.config or {}
+    if not (cfg.doHealthClamp and e and e.soul) then return end
+
+    local s = e.soul
+    -- read current & max
+    local okH, H = false, nil
+    if s.GetHealth then okH, H = pcall(s.GetHealth, s) end
+
+    local okM, M = false, nil
+    if s.GetHealthMax then okM, M = pcall(s.GetHealthMax, s) end
+
+    if not (okH and okM and type(H) == "number" and type(M) == "number" and M > 0) then return end
+
+    local nFloor = (tonumber(cfg.minHpAfterKO) or 0) * M
+    local aFloor = tonumber(cfg.minHpAbsolute) or 0
+    local minH   = (nFloor > aFloor) and nFloor or aFloor
+    if H >= minH then return end
+
+    -- prefer SetHealth; fall back to SetState("health", ...)
+    local setOk = false
+    if s.SetHealth then
+        setOk = pcall(s.SetHealth, s, minH)
+    end
+    if (not setOk) and s.SetState then
+        setOk = pcall(s.SetState, s, "health", minH)
+    end
+
+    if setOk and cfg.logging and cfg.logging.probe then
+        MercyStrike.LogProbe("hp clamp → " .. string.format("%.1f/%.1f", minH, M))
+    end
+end
+
+-- #ms_reload_cfg()  → reloads DEFAULT
+function ms_reload_cfg()
+    if MercyStrike and MercyStrike.ReloadConfig then MercyStrike.ReloadConfig() end
+    ms_show_cfg()
+end
+
+-- #ms_show_cfg()    → prints the effective flags
+function ms_show_cfg()
+    local c = MercyStrike and MercyStrike.config or {}
+    local l = c.logging or {}
+    System.LogAlways(string.format(
+        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s scale=%s base=%.2f max=%.2f pollCombatMs=%s | logs core=%s probe=%s apply=%s skip=%s",
+        tonumber(c.hpThreshold or 0.12),
+        tostring(c.onlyHostile),
+        tostring(c.scaleWithWarfare),
+        tonumber(c.applyBaseChance or 0),
+        tonumber(c.applyChanceMax or 0),
+        tostring(c.pollCombatMs),
+        tostring(l.core), tostring(l.probe), tostring(l.apply), tostring(l.skip)
+    ))
+end
+
+-- #ms_debug_on() / #ms_debug_off() → quick logging toggles
+function ms_debug_on()
+    local c         = MercyStrike and MercyStrike.config or {}
+    c.logging       = c.logging or {}
+    c.logging.probe = true
+    c.logging.skip  = true
+    c.logging.apply = true
+    System.LogAlways("[MercyStrike] debug logs ON (probe/skip/apply)")
+end
+
+function ms_debug_off()
+    local c         = MercyStrike and MercyStrike.config or {}
+    c.logging       = c.logging or {}
+    c.logging.probe = false
+    c.logging.skip  = false
+    System.LogAlways("[MercyStrike] debug logs OFF (core/apply kept)")
+end
+
+-- #ms_set_hpthr(0.85) etc. → quick in-session tuning
+function ms_set_hpthr(x)
+    local c = MercyStrike and MercyStrike.config or {}; c.hpThreshold = tonumber(x) or c.hpThreshold
+    System.LogAlways("[MercyStrike] hpThreshold=" .. tostring(c.hpThreshold))
+end
+
+function ms_set_static(p)
+    local c            = MercyStrike and MercyStrike.config or {}
+    c.scaleWithWarfare = false
+    c.applyBaseChance  = math.max(0, math.min(1, tonumber(p) or c.applyBaseChance))
+    System.LogAlways(string.format("[MercyStrike] static mode: base=%.2f", c.applyBaseChance))
+end
+
+function ms_set_scaled()
+    local c = MercyStrike and MercyStrike.config or {}
+    c.scaleWithWarfare = true
+    System.LogAlways("[MercyStrike] scaled mode (warfare)")
 end
