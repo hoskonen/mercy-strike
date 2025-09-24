@@ -25,15 +25,15 @@ local DEFAULT = {
     minHpAbsolute    = 5,    -- absolute fallback floor (HP points)
 
     -- KO probability (scales with Warfare)
-    hpThreshold      = 0.20, -- default: 0.15
-    applyBaseChance  = 0.05, -- 5% at Warfare 0
-    applyBonusAtCap  = 0.15, -- +15% at Warfare cap → total 20% at cap
-    skillCap         = 30,   -- Warfare level cap used for scaling
+    hpThreshold      = 0.80,  -- default: 0.15
+    applyBaseChance  = 0.80,  -- 5% at Warfare 0
+    applyBonusAtCap  = 0.15,  -- +15% at Warfare cap → total 20% at cap
+    skillCap         = 30,    -- Warfare level cap used for scaling
     skillIdWarfare   = "fencing",
-    scaleWithWarfare = true, -- default: true / set false to freeze chance to applyBaseChance
+    scaleWithWarfare = false, -- default: true / set false to freeze chance to applyBaseChance
 
     -- hard cap (safety; optional)
-    applyChanceMax   = 0.20, -- don’t exceed 50% total (tweak if you like)
+    applyChanceMax   = 1.00, -- don’t exceed 50% total (tweak if you like)
 
     -- Buff to apply
     buffId           = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",

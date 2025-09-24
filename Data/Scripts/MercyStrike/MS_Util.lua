@@ -1,6 +1,7 @@
 -- Scripts/MercyStrike/MS_Util.lua  (Lua 5.1, clean)
 
 local MS = MercyStrike
+MercyStrike._per = MercyStrike._per or {} -- per-entity state
 
 function MS.GetPlayer()
     return System.GetEntityByName("Henry") or System.GetEntityByName("dude")
@@ -202,37 +203,20 @@ function MS.GetEffectiveApplyChance()
     return ch, lvl
 end
 
-function MS.ClampHealthPostKO(e)
-    local cfg = MercyStrike.config or {}
-    if not (cfg.doHealthClamp and e and e.soul) then return end
+function MS.ClampHealthPostKO(e, floorPct)
+    local soul = e and e.soul
+    if not soul or not soul.GetHealth or not soul.GetHealthMax then return end
 
-    local s = e.soul
-    -- read current & max
-    local okH, H = false, nil
-    if s.GetHealth then okH, H = pcall(s.GetHealth, s) end
+    local okH, H = pcall(soul.GetHealth, soul)
+    local okM, M = pcall(soul.GetHealthMax, soul)
+    if not (okH and okM and H and M) then return end
 
-    local okM, M = false, nil
-    if s.GetHealthMax then okM, M = pcall(s.GetHealthMax, s) end
+    local pct = tonumber(floorPct or 0.05) or 0.05
+    if pct < 0 then pct = 0 end
+    if pct > 0.5 then pct = 0.5 end
 
-    if not (okH and okM and type(H) == "number" and type(M) == "number" and M > 0) then return end
-
-    local nFloor = (tonumber(cfg.minHpAfterKO) or 0) * M
-    local aFloor = tonumber(cfg.minHpAbsolute) or 0
-    local minH   = (nFloor > aFloor) and nFloor or aFloor
-    if H >= minH then return end
-
-    -- prefer SetHealth; fall back to SetState("health", ...)
-    local setOk = false
-    if s.SetHealth then
-        setOk = pcall(s.SetHealth, s, minH)
-    end
-    if (not setOk) and s.SetState then
-        setOk = pcall(s.SetState, s, "health", minH)
-    end
-
-    if setOk and cfg.logging and cfg.logging.probe then
-        MercyStrike.LogProbe("hp clamp → " .. string.format("%.1f/%.1f", minH, M))
-    end
+    local floor = pct * M
+    if H < floor then pcall(soul.SetHealth, soul, floor) end
 end
 
 -- #ms_reload_cfg()  → reloads DEFAULT
@@ -292,4 +276,77 @@ function ms_set_scaled()
     local c = MercyStrike and MercyStrike.config or {}
     c.scaleWithWarfare = true
     System.LogAlways("[MercyStrike] scaled mode (warfare)")
+end
+
+local function pid(e) return e and e.id or e end -- normalize key
+
+function MercyStrike.TrackHp(e, hpNow)
+    local k = pid(e); if not k then return nil, nil end
+    local S = MercyStrike._per[k] or {}
+    local hpPrev = S.hpPrev
+    S.hpPrev = hpNow
+    MercyStrike._per[k] = S
+    return hpPrev, hpNow
+end
+
+-- Optional UH -> MercyStrike bridge (call this from UH if you have it)
+function MS_RecordHit(targetId, attackerId)
+    local k = pid(targetId); if not k then return end
+    local S = MercyStrike._per[k] or {}
+    S.lastHitBy = attackerId
+    S.lastHitAt = (System and System.GetCurrTime and System.GetCurrTime()) or os.clock()
+    MercyStrike._per[k] = S
+end
+
+function MercyStrike.NowTime()
+    return (System and System.GetCurrTime and System.GetCurrTime()) or os.clock()
+end
+
+-- Exported API: returns true iff we believe the *player* landed the recent hit
+function MercyStrike.IsRecentPlayerHit(e, player, windowS)
+    if not e then return false end
+    local S = MercyStrike._per and MercyStrike._per[e.id]
+    if not S then return false end
+
+    local wnd = tonumber(windowS) or 0.6
+    local tnow = (MercyStrike.NowTime and MercyStrike.NowTime()) or os.clock()
+
+    -- 1) Prefer stamped ownership (from MS_HitSense)
+    if S.lastHitBy and player and S.lastHitBy == player.id
+        and S.lastHitAt and (tnow - S.lastHitAt) <= wnd then
+        return true
+    end
+
+    -- 2) Heuristic path: significant *instant* HP drop while in melee range
+    --    (hpPrev set only after we’ve processed target at least once)
+    local hpPrev = S.hpPrev
+    local hpNow  = S.hpNow
+    if not hpPrev or not hpNow then
+        return false
+    end
+
+    -- Only measure “big hit” when we were above threshold before the hit
+    local thr  = (MercyStrike.config and MercyStrike.config.hpThreshold) or 0.12
+    local drop = 0
+    if hpPrev > thr then
+        drop = hpPrev - hpNow -- normalized (0..1)
+        if drop < 0 then drop = 0 end
+    end
+
+    -- Distance check (melee lunge friendly)
+    local close = false
+    if player and player.GetWorldPos and e.GetWorldPos then
+        local p, q = { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 }
+        pcall(player.GetWorldPos, player, p)
+        pcall(e.GetWorldPos, e, q)
+        local dx, dy, dz = p.x - q.x, p.y - q.y, p.z - q.z
+        close = (dx * dx + dy * dy + dz * dz) <= (3.6 * 3.6) -- ≈ 3.6 m
+    end
+
+    -- Consider ≥10% (0.10) normalized drop while close as "your hit"
+    if close and drop >= 0.10 then
+        return true
+    end
+
+    return false
 end
