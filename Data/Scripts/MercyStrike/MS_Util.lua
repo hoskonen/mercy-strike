@@ -308,7 +308,8 @@ function MercyStrike.IsRecentPlayerHit(e, player, windowS)
     local S = MercyStrike._per and MercyStrike._per[e.id]
     if not S then return false end
 
-    local wnd = tonumber(windowS) or 0.6
+    local wnd = tonumber(windowS) or 1.0
+    if wnd > 2.0 then wnd = 2.0 end
     local tnow = (MercyStrike.NowTime and MercyStrike.NowTime()) or os.clock()
 
     -- 1) Prefer stamped ownership (from MS_HitSense)

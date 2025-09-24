@@ -2,9 +2,9 @@
 local MS       = MercyStrike
 
 -- configurable-ish knobs (no new user config needed)
-local TICK_MS  = 250  -- 4Hz feels responsive
-local DROP_MIN = 0.10 -- consider ≥10% HP drop a hit
-local RADIUS_M = 4.0  -- within ~4m of player counts
+local TICK_MS  = 200  -- 4Hz feels responsive
+local DROP_MIN = 0.03 -- consider ≥10% HP drop a hit
+local RADIUS_M = 6.0  -- within ~4m of player counts
 
 MS.HitSense    = MS.HitSense or {}
 local HS       = MS.HitSense
@@ -83,11 +83,13 @@ function HS.Tick()
                 local prev = S._hsPrevHp; S._hsPrevHp = hp
                 if prev and prev > 0 then
                     local drop = prev - hp
-                    if drop >= DROP_MIN and withinR2(player, e, RADIUS_M) then
-                        MS.RecordHit(id, player.id)
-                        if MS.config and MS.config.logging and MS.config.logging.probe then
-                            MS.LogProbe(("hitSense stamp name=%s drop=%.2f dist<=%.1f")
-                                :format(tostring(e.GetName and e:GetName() or id), drop, RADIUS_M))
+                    if drop > 0 and withinR2(player, e, RADIUS_M) then
+                        if drop >= DROP_MIN then
+                            MS.RecordHit(id, player.id)
+                            if MS.config.logging and MS.config.logging.probe then
+                                MS.LogProbe(("hitSense stamp name=%s drop=%.2f dist<=%.1f")
+                                    :format(tostring(e.GetName and e:GetName() or id), drop, RADIUS_M))
+                            end
                         end
                     end
                 end

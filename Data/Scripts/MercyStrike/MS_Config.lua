@@ -12,7 +12,7 @@ local DEFAULT = {
 
     -- scan budget
     maxPerTick       = 8,   -- scan at most N NPCs per combat tick
-    rescanCooldownS  = 3.0, -- don't re-check the same NPC again for this many seconds
+    rescanCooldownS  = 0.5, -- don't re-check the same NPC again for this many seconds
 
     -- Filters
     onlyHostile      = true,
@@ -39,7 +39,7 @@ local DEFAULT = {
     buffId           = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
     buffDuration     = -1,
 
-    logging          = { core = true, probe = true, apply = true, skip = false },
+    logging          = { core = true, probe = true, apply = true, skip = true },
 }
 
 -- shallow copy (Lua 5.1)
