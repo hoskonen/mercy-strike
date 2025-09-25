@@ -2,7 +2,7 @@
 local DEFAULT = {
     -- Polling (ms)
     pollWorldMs           = 3500, -- slow outer poller (detect combat)
-    pollCombatMs          = 500,  -- fast inner poller (in combat)
+    combatPollMs          = 200,  -- fast inner poller (in combat)
     enabled               = true,
 
     -- Scan
@@ -33,12 +33,12 @@ local DEFAULT = {
     scaleWithWarfare      = false, -- default: true / set false to freeze chance to applyBaseChance
 
     -- Death-like KO (intercept lethal hits and KO instead)
-    deathLikeKO           = true, -- master toggle
-    deathLikeDelayMs      = 120,  -- tiny visual delay to "sell" the kill
-    deathLikeLethalThr    = 0.05, -- <= 4% HP is lethal territory
-    deathLikeMinDelta     = 0.30, -- or a big HP drop this tick (prev-now >= 0.18)
-    deathLikeRequireStamp = true, -- require a recent player stamp (HitSense) to trigger
-    ownershipWindowS      = 2.0,  -- "recent" window for stamps
+    deathLikeKO           = true,  -- master toggle
+    deathLikeDelayMs      = 120,   -- tiny visual delay to "sell" the kill
+    deathLikeLethalThr    = 0.05,  -- <= 4% HP is lethal territory
+    deathLikeMinDelta     = 0.30,  -- or a big HP drop this tick (prev-now >= 0.18)
+    deathLikeRequireStamp = false, -- require a recent player stamp (HitSense) to trigger
+    ownershipWindowS      = 2.0,   -- "recent" window for stamps
 
     -- hard cap (safety; optional)
     applyChanceMax        = 1.00, -- don’t exceed 50% total (tweak if you like)

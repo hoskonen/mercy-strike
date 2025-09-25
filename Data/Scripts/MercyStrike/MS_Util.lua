@@ -230,13 +230,13 @@ function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
     local l = c.logging or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s scale=%s base=%.2f max=%.2f pollCombatMs=%s | logs core=%s probe=%s apply=%s skip=%s",
+        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s scale=%s base=%.2f max=%.2f combatPollMs=%s | logs core=%s probe=%s apply=%s skip=%s",
         tonumber(c.hpThreshold or 0.12),
         tostring(c.onlyHostile),
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
         tonumber(c.applyChanceMax or 0),
-        tostring(c.pollCombatMs),
+        tostring(c.combatPollMs),
         tostring(l.core), tostring(l.probe), tostring(l.apply), tostring(l.skip)
     ))
 end
@@ -366,8 +366,7 @@ function MS.WasRecentlyHitByPlayer(e, windowS)
     return false
 end
 
--- Ensure entity HP is at least (floorNorm * max), where floorNorm is 0..1
--- Ensure entity HP is at least (floorNorm * max), where floorNorm is 0..1
+-- Ensure entity HP is at least (floorNorm * max), floorNorm in [0..1]
 function MS.ClampHealthMin(e, floorNorm)
     if not e then return end
     local s = e.soul
@@ -375,13 +374,11 @@ function MS.ClampHealthMin(e, floorNorm)
 
     local okM, maxHp = pcall(function() return s:GetHealthMax() end)
     local okH, curHp = pcall(function() return s:GetHealth() end)
-    if not (okM and okH) then return end
-    if not (maxHp and curHp) then return end
+    if not (okM and okH and maxHp and curHp) then return end
 
     local n = tonumber(floorNorm) or 0
     if n < 0 then n = 0 elseif n > 1 then n = 1 end
     local floorAbs = n * maxHp
-
     if curHp < floorAbs then
         pcall(function() s:SetHealth(floorAbs) end)
     end

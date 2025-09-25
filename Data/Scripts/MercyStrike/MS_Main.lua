@@ -17,11 +17,11 @@ if MercyStrike and MercyStrike.HitSense and MercyStrike.HitSense.Start then
 end
 
 -- IMPORTANT: start world/combat pollers
-if MercyStrike and MercyStrike.Bootstrap then
-    MercyStrike.Bootstrap()
-else
-    System.LogAlways("[MercyStrike] ERROR: Bootstrap missing")
-end
+-- if MercyStrike and MercyStrike.Bootstrap then
+--     MercyStrike.Bootstrap()
+-- else
+--     System.LogAlways("[MercyStrike] ERROR: Bootstrap missing")
+-- end
 
 -- ------------------------
 -- State
@@ -141,11 +141,13 @@ local function CombatTick()
                             -- Track previous HP → detect crossing from above → below threshold
                             local hpPrev = nil
                             if MercyStrike.TrackHp then
-                                hpPrev = MercyStrike.TrackHp(e, hp) -- single LHS grabs first return
+                                hpPrev = MercyStrike.TrackHp(e, hp) -- first return only
                             end
 
+                            -- ensure per-entity scratch and record current hp once
+                            MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
                             local S = MercyStrike._per[e.id]
-                            S.hpNow = hp -- keep this (needed by heuristic)
+                            S.hpNow = hp
 
                             -- NEW: cheap damage-sighting stamp to help ownership
                             if S.hpPrev and S.hpNow and S.hpNow < S.hpPrev then
@@ -162,24 +164,18 @@ local function CombatTick()
                                 end
                             end
 
-                            -- (optional) stash current for heuristics that read it
-                            if MercyStrike._per then
-                                local k = e and e.id
-                                if k then
-                                    MercyStrike._per[k] = MercyStrike._per[k] or {}
-                                    MercyStrike._per[k].hpNow = hp
-                                end
-                            end
-
                             -- Death-like KO: intercept lethal or near-lethal drops
-                            if cfg.deathLikeKO and (hp or 0) > 0 then
+                            if cfg.deathLikeKO and (hp ~= nil) then
                                 local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.04
-                                local bigDrop   = false
+                                local bigDrop = false
                                 if hpPrev ~= nil then
                                     local minDelta = tonumber(cfg.deathLikeMinDelta) or 0.18
                                     bigDrop = (hpPrev > (hp or 0)) and ((hpPrev - (hp or 0)) >= minDelta)
                                 end
+
                                 local lethalNow = (hp or 0) <= lethalThr
+                                local atZero    = (hp or 0) <= 0.0
+
                                 if (lethalNow or bigDrop) then
                                     local pass = true
                                     if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
@@ -194,40 +190,34 @@ local function CombatTick()
                                                     tostring(bigDrop)))
                                         end
 
-                                        -- dynamic micro-delay: snap fast at true lethal, normal otherwise
+                                        -- mark to suppress edge this tick
+                                        MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+                                        MercyStrike._per[e.id]._armedDeathLike = true
+
+                                        -- If we arrived *already* at zero, lift HP a hair so KO can land
+                                        if atZero and MS and MS.ClampHealthMin then
+                                            MS.ClampHealthMin(e, (lethalThr * 0.6)) -- e.g., 60% of lethal threshold
+                                        end
+
+                                        -- dynamic micro-delay
                                         local delay = tonumber(cfg.deathLikeDelayMs) or 120
-                                        if lethalNow then
-                                            delay = math.min(delay, 40) -- ~instant when truly lethal
-                                        end
-
-                                        -- mark this target so the edge path won't also roll this tick
-                                        if MercyStrike and MercyStrike._per and e and e.id then
-                                            MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
-                                            MercyStrike._per[e.id]._armedDeathLike = true
-                                        end
-
-                                        -- tiny pre-clamp so engine doesn't mark as dead before KO lands
-                                        -- (helper defined in MS_Util.lua below)
-                                        if MS and MS.ClampHealthMin and lethalNow then
-                                            MS.ClampHealthMin(e, (cfg.deathLikeLethalThr or 0.04) * 0.6)
+                                        if lethalNow or atZero then
+                                            delay = math.min(delay, 30) -- snap-fast at lethal/zero
                                         end
 
                                         Script.SetTimer(delay, function()
-                                            -- apply KO if still alive and valid
                                             local applied = false
                                             if MS_Unconscious and MS_Unconscious.Apply then
                                                 local okA, resA = pcall(MS_Unconscious.Apply, e,
                                                     cfg.buffId or "unconscious_permanent")
                                                 applied = okA and resA or false
-                                                if (not okA) and cfg.logging and cfg.logging.core then
-                                                    MS.LogCore("ERR: step=Unconscious.Apply (deathLike) name=" .. name)
-                                                end
                                             end
                                             if applied then
                                                 if cfg.logging and cfg.logging.probe then
                                                     MS.LogProbe("deathLike KO applied name=" .. name)
                                                 end
                                                 if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                                MercyStrike._per[e.id]._armedDeathLike = nil
                                                 armCooldown(e, nowSec())
                                             end
                                         end)
@@ -393,7 +383,7 @@ end
 local function StartCombatPoller()
     if combatActive then return end
     combatActive = true
-    local ms = tonumber(MS.config and MS.config.pollCombatMs) or 500
+    local ms = tonumber(MS.config and MS.config.combatPollMs) or 500
 
     -- log effective chance + warfare level
     local chance, warfare = MS.GetEffectiveApplyChance()
@@ -480,3 +470,6 @@ function MS:OnGameplayStarted()
     MS.LogCore("OnGameplayStarted → (re)start world detector")
     MS.Start()
 end
+
+-- Kick off after functions exist
+if MS and MS.Bootstrap then MS.Bootstrap() end
