@@ -40,6 +40,11 @@ local DEFAULT = {
     deathLikeRequireStamp = false, -- require a recent player stamp (HitSense) to trigger
     ownershipWindowS      = 2.0,   -- "recent" window for stamps
 
+    -- HitSense tuning (ownership stamps)
+    hitsenseTickMs        = 200, -- poll rate for HitSense (ms)
+    hitsenseDropMin       = 0.10, -- ≥10% hp drop counts as a hit
+    hitsenseMaxDistance   = 9.0, -- meters from player to target for a valid stamp
+
     -- hard cap (safety; optional)
     applyChanceMax        = 1.00, -- don’t exceed 50% total (tweak if you like)
 
@@ -47,7 +52,7 @@ local DEFAULT = {
     buffId                = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
     buffDuration          = -1,
 
-    logging               = { core = true, probe = true, apply = true, skip = true },
+    logging               = { core = true, probe = true, apply = true, skip = true, hitsense = true },
 }
 
 -- shallow copy (Lua 5.1)

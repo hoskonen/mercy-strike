@@ -1,10 +1,10 @@
 -- Scripts/MercyStrike/MS_HitSense.lua
 local MS       = MercyStrike
 
--- configurable-ish knobs (no new user config needed)
-local TICK_MS  = 200  -- 4Hz feels responsive
-local DROP_MIN = 0.03 -- consider ≥10% HP drop a hit
-local RADIUS_M = 6.0  -- within ~4m of player counts
+local cfg      = MS and MS.config or {}
+local TICK_MS  = tonumber(cfg.hitsenseTickMs) or 200
+local DROP_MIN = tonumber(cfg.hitsenseDropMin) or 0.10
+local RADIUS_M = tonumber(cfg.hitsenseMaxDistance) or 7.0
 
 MS.HitSense    = MS.HitSense or {}
 local HS       = MS.HitSense
@@ -14,9 +14,11 @@ local function now()
 end
 
 function HS.Stop()
-    if not HS._timer then return end
-    MS_Poller.StopNamed("hitsense")
-    HS._timer = nil
+    -- Stop the named poller unconditionally; keep our own running flag tidy
+    if MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("hitsense")
+    end
+    HS._running = false
 end
 
 -- helper: squared distance ≤ R^2
@@ -27,6 +29,27 @@ local function withinR2(a, b, r)
     local dx, dy, dz = p.x - q.x, p.y - q.y, p.z - q.z
     return (dx * dx + dy * dy + dz * dz) <= (r * r)
 end
+
+local function logStamp(e, player, reason, extra)
+    local cfg = MS and MS.config or {}
+    if not (cfg.logging and cfg.logging.hitsense) then return end
+    local name = (e and e.GetName and e:GetName()) or tostring(e and e.id)
+    local p    = player
+    local dist = -1
+    if e and p and e.GetWorldPos and p.GetWorldPos then
+        local pe, pp = { 0, 0, 0 }, { 0, 0, 0 }
+        pcall(function() e:GetWorldPos(pe) end)
+        pcall(function() p:GetWorldPos(pp) end)
+        local dx, dy, dz = (pe[1] - pp[1]), (pe[2] - pp[2]), (pe[3] - pp[3])
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    end
+    local tag = reason or "stamp"
+    local msg = string.format("[Stamp] %s name=%s id=%s dist=%.1f%s",
+        tag, tostring(name), tostring(e and e.id), dist,
+        extra and (" " .. extra) or "")
+    MS.LogProbe(msg)
+end
+
 
 -- Record function used everywhere else
 function MS.RecordHit(targetId, attackerId)
@@ -56,6 +79,8 @@ function HS.Start()
 end
 
 function HS.Tick()
+    local stampedThisTick = 0
+
     -- Early outs so the very first tick can't explode
     if not MS or not MS.GetPlayer then return end
     local player = MS.GetPlayer(); if not player then return end
@@ -85,6 +110,9 @@ function HS.Tick()
                     local drop = prev - hp
                     if drop > 0 and withinR2(player, e, RADIUS_M) then
                         if drop >= DROP_MIN then
+                            logStamp(e, player, "HitSense", string.format("max=%.1f", RADIUS_M))
+
+                            stampedThisTick = stampedThisTick + 1
                             MS.RecordHit(id, player.id)
                             if MS.config.logging and MS.config.logging.probe then
                                 MS.LogProbe(("hitSense stamp name=%s drop=%.2f dist<=%.1f")
@@ -94,6 +122,13 @@ function HS.Tick()
                     end
                 end
             end
+        end
+    end
+
+    do
+        local cfg = MS and MS.config or {}
+        if cfg.logging and cfg.logging.hitsense then
+            MS.LogProbe(string.format("[HitSense] tick stamped=%d", stampedThisTick))
         end
     end
 end

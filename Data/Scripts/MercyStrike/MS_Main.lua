@@ -16,13 +16,6 @@ if MercyStrike and MercyStrike.HitSense and MercyStrike.HitSense.Start then
     MercyStrike.HitSense.Start()
 end
 
--- IMPORTANT: start world/combat pollers
--- if MercyStrike and MercyStrike.Bootstrap then
---     MercyStrike.Bootstrap()
--- else
---     System.LogAlways("[MercyStrike] ERROR: Bootstrap missing")
--- end
-
 -- ------------------------
 -- State
 -- ------------------------
@@ -117,249 +110,264 @@ local function CombatTick()
                         -- still cooling down → skip silently (or log if you want)
                         -- if cfg.logging and cfg.logging.skip then MS.LogSkip("cooldown name=" .. name) end
                     else
-                        seen = seen + 1
-
-                        -- HP
-                        local okHP, hp = pcall(MS.GetNormalizedHp, e)
-                        if not okHP then
-                            if cfg.logging and cfg.logging.core then
-                                MS.LogCore("ERR: step=GetNormalizedHp name=" .. name)
-                            end
-                            -- don't arm cooldown on failure → we'll retry soon
+                        -- If already KO'd: maintain floor and skip per-target logic
+                        local _per = MercyStrike._per
+                        local alreadyKO = _per and _per[e.id] and _per[e.id].koApplied
+                        if alreadyKO then
+                            if MS and MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
                         else
-                            stat.scanned = stat.scanned + 1
-                            -- we successfully touched HP → arm cooldown now
-                            armCooldown(e, tnow)
+                            seen = seen + 1
 
-                            if MS.LogProbe and cfg.logging and cfg.logging.probe then
-                                MS.LogProbe(string.format("name=%s hp=%.3f", name, hp or -1))
-                            end
-
-                            -- Edge-trigger KO tied to your hit
-                            local thr = (cfg.hpThreshold or 0.12)
-
-                            -- Track previous HP → detect crossing from above → below threshold
-                            local hpPrev = nil
-                            if MercyStrike.TrackHp then
-                                hpPrev = MercyStrike.TrackHp(e, hp) -- first return only
-                            end
-
-                            -- ensure per-entity scratch and record current hp once
-                            MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
-                            local S = MercyStrike._per[e.id]
-                            S.hpNow = hp
-
-                            -- NEW: cheap damage-sighting stamp to help ownership
-                            if S.hpPrev and S.hpNow and S.hpNow < S.hpPrev then
-                                -- quick distance check (copy your 3.6m logic or reuse a helper)
-                                local close = false
-                                if player and player.GetWorldPos and e.GetWorldPos then
-                                    local p, q = { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 }
-                                    pcall(player.GetWorldPos, player, p); pcall(e.GetWorldPos, e, q)
-                                    local dx, dy, dz = p.x - q.x, p.y - q.y, p.z - q.z
-                                    close = (dx * dx + dy * dy + dz * dz) <= (6.0 * 6.0)
+                            -- HP
+                            local okHP, hp = pcall(MS.GetNormalizedHp, e)
+                            if not okHP then
+                                if cfg.logging and cfg.logging.core then
+                                    MS.LogCore("ERR: step=GetNormalizedHp name=" .. name)
                                 end
-                                if close then
-                                    MercyStrike.RecordHit(e.id, player.id)
-                                end
-                            end
+                                -- don't arm cooldown on failure → we'll retry soon
+                            else
+                                stat.scanned = stat.scanned + 1
+                                -- we successfully touched HP → arm cooldown now
+                                armCooldown(e, tnow)
 
-                            -- Death-like KO: intercept lethal or near-lethal drops
-                            if cfg.deathLikeKO and (hp ~= nil) then
-                                local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.04
-                                local bigDrop = false
-                                if hpPrev ~= nil then
-                                    local minDelta = tonumber(cfg.deathLikeMinDelta) or 0.18
-                                    bigDrop = (hpPrev > (hp or 0)) and ((hpPrev - (hp or 0)) >= minDelta)
+                                if MS.LogProbe and cfg.logging and cfg.logging.probe then
+                                    MS.LogProbe(string.format("name=%s hp=%.3f", name, hp or -1))
                                 end
 
-                                local lethalNow = (hp or 0) <= lethalThr
-                                local atZero    = (hp or 0) <= 0.0
+                                -- Edge-trigger KO tied to your hit
+                                local thr = tonumber(cfg.hpThreshold) or 0.12
 
-                                if (lethalNow or bigDrop) then
-                                    local pass = true
-                                    if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
+                                -- Track previous HP → detect crossing from above → below threshold
+                                local hpPrev = nil
+                                if MercyStrike.TrackHp then
+                                    hpPrev = MercyStrike.TrackHp(e, hp) -- first return only
+                                end
+
+                                -- ensure per-entity scratch and record current hp once
+                                MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+                                local S = MercyStrike._per[e.id]
+                                S.hpNow = hp
+
+                                -- NEW: cheap damage-sighting stamp to help ownership
+                                if S.hpPrev and S.hpNow and S.hpNow < S.hpPrev then
+                                    -- quick distance check (copy your 3.6m logic or reuse a helper)
+                                    local close = false
+                                    if player and player.GetWorldPos and e.GetWorldPos then
+                                        local p, q = { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 }
+                                        pcall(player.GetWorldPos, player, p); pcall(e.GetWorldPos, e, q)
+                                        local dx, dy, dz = p.x - q.x, p.y - q.y, p.z - q.z
+                                        local dMax = tonumber(cfg.hitsenseMaxDistance) or 7.0
+                                        close = (dx * dx + dy * dy + dz * dz) <= (dMax * dMax)
+                                    end
+                                    if close then
+                                        MercyStrike.RecordHit(e.id, player.id)
+                                    end
+                                end
+
+                                -- Death-like KO: intercept lethal or near-lethal drops
+                                if cfg.deathLikeKO and (hp ~= nil) then
+                                    local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.04
+                                    local bigDrop = false
+                                    if hpPrev ~= nil then
+                                        local minDelta = tonumber(cfg.deathLikeMinDelta) or 0.18
+                                        bigDrop = (hpPrev > (hp or 0)) and ((hpPrev - (hp or 0)) >= minDelta)
+                                    end
+
+                                    local lethalNow = (hp or 0) <= lethalThr
+                                    local atZero    = (hp or 0) <= 0.0
+
+                                    if (lethalNow or bigDrop) then
+                                        -- (we're already in the 'not alreadyKO' branch; single guard for safety)
+                                        if S and S.koApplied then
+                                            if MS and MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                        else
+                                            local pass = true
+                                            if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
+                                                local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e,
+                                                    cfg.ownershipWindowS or 1.2)
+                                                pass = okOwn and (resOwn and true or false) or false
+                                            end
+                                            if pass then
+                                                if cfg.logging and cfg.logging.probe then
+                                                    MS.LogProbe(("deathLike arm name=%s hpPrev=%s hp=%.3f lethalNow=%s bigDrop=%s")
+                                                        :format(name, tostring(hpPrev), hp or -1, tostring(lethalNow),
+                                                            tostring(bigDrop)))
+                                                end
+
+                                                -- mark to suppress edge this tick
+                                                MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+                                                MercyStrike._per[e.id]._armedDeathLike = true
+
+                                                -- If we arrived *already* at zero, lift HP a hair so KO can land
+                                                if atZero and MS and MS.ClampHealthMin then
+                                                    MS.ClampHealthMin(e, (lethalThr * 0.6)) -- e.g., 60% of lethal threshold
+                                                end
+
+                                                -- dynamic micro-delay
+                                                local delay = tonumber(cfg.deathLikeDelayMs) or 120
+                                                if lethalNow or atZero then
+                                                    delay = math.min(delay, 30) -- snap-fast at lethal/zero
+                                                end
+
+                                                Script.SetTimer(delay, function()
+                                                    local applied = false
+                                                    if MS_Unconscious and MS_Unconscious.Apply then
+                                                        local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                                            cfg.buffId or "unconscious_permanent")
+                                                        applied = okA and resA or false
+                                                    end
+                                                    if applied then
+                                                        if cfg.logging and cfg.logging.probe then
+                                                            MS.LogProbe("deathLike KO applied name=" .. name)
+                                                        end
+                                                        if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                                        MercyStrike._per[e.id]._armedDeathLike = nil
+                                                        armCooldown(e, nowSec())
+                                                    end
+                                                end)
+                                            end
+                                        end
+                                    end -- added
+                                end
+
+
+                                local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
+                                if (not (MercyStrike and MercyStrike._per and e and e.id and MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike)) and crossed then
+                                    stat.edges = stat.edges + 1
+
+                                    -- ownership (logging only; based on HitSense stamps)
+                                    local isYours = false
+                                    if MS and MS.WasRecentlyHitByPlayer then
                                         local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e,
                                             cfg.ownershipWindowS or 1.2)
-                                        pass = okOwn and (resOwn and true or false) or false
+                                        isYours = okOwn and (resOwn and true or false) or false
                                     end
-                                    if pass then
-                                        if cfg.logging and cfg.logging.probe then
-                                            MS.LogProbe(("deathLike arm name=%s hpPrev=%s hp=%.3f lethalNow=%s bigDrop=%s")
-                                                :format(name, tostring(hpPrev), hp or -1, tostring(lethalNow),
-                                                    tostring(bigDrop)))
-                                        end
+                                    if isYours then stat.yours = stat.yours + 1 end
 
-                                        -- mark to suppress edge this tick
-                                        MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
-                                        MercyStrike._per[e.id]._armedDeathLike = true
+                                    -- compute effective chance (static or scaled)
+                                    local baseChance, warfare = MS.GetEffectiveApplyChance()
 
-                                        -- If we arrived *already* at zero, lift HP a hair so KO can land
-                                        if atZero and MS and MS.ClampHealthMin then
-                                            MS.ClampHealthMin(e, (lethalThr * 0.6)) -- e.g., 60% of lethal threshold
-                                        end
+                                    -- ramp: 0.25..1.0 as HP drops deeper below thr
+                                    local ramp = 1.0
+                                    if thr > 0 then
+                                        local x = (hp or 0) / thr
+                                        if x < 0 then x = 0 elseif x > 1 then x = 1 end
+                                        ramp = 0.25 + (1.0 - x) * 0.75
+                                    end
 
-                                        -- dynamic micro-delay
-                                        local delay = tonumber(cfg.deathLikeDelayMs) or 120
-                                        if lethalNow or atZero then
-                                            delay = math.min(delay, 30) -- snap-fast at lethal/zero
-                                        end
+                                    local chance = baseChance * ramp
+                                    if cfg.applyChanceMax and chance > cfg.applyChanceMax then
+                                        chance = cfg.applyChanceMax
+                                    end
 
-                                        Script.SetTimer(delay, function()
-                                            local applied = false
-                                            if MS_Unconscious and MS_Unconscious.Apply then
-                                                local okA, resA = pcall(MS_Unconscious.Apply, e,
-                                                    cfg.buffId or "unconscious_permanent")
-                                                applied = okA and resA or false
+                                    if cfg.logging and cfg.logging.probe then
+                                        MS.LogProbe(("edge name=%s hp=%.3f thr=%.2f ramp=%.2f p=%.2f")
+                                            :format(name, hp or -1, thr, ramp, chance))
+                                    end
+
+                                    -- single roll → single apply
+                                    stat.rolled = stat.rolled + 1
+                                    if (hp or 0) > 0 and math.random() < chance then
+                                        local applied = false
+                                        if MS_Unconscious and MS_Unconscious.Apply then
+                                            local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                                cfg.buffId or "unconscious_permanent")
+                                            applied = okA and resA or false
+                                            if (not okA) and cfg.logging and cfg.logging.core then
+                                                MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
                                             end
-                                            if applied then
-                                                if cfg.logging and cfg.logging.probe then
-                                                    MS.LogProbe("deathLike KO applied name=" .. name)
-                                                end
-                                                if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
-                                                MercyStrike._per[e.id]._armedDeathLike = nil
-                                                armCooldown(e, nowSec())
-                                            end
-                                        end)
-                                    end
-                                end
-                            end
-
-
-                            local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
-                            if (not (MercyStrike and MercyStrike._per and e and e.id and MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike)) and crossed then
-                                stat.edges = stat.edges + 1
-
-                                -- ownership (logging only; based on HitSense stamps)
-                                local isYours = false
-                                if MS and MS.WasRecentlyHitByPlayer then
-                                    local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e, cfg.ownershipWindowS or 1.2)
-                                    isYours = okOwn and (resOwn and true or false) or false
-                                end
-                                if isYours then stat.yours = stat.yours + 1 end
-
-                                -- compute effective chance (static or scaled)
-                                local baseChance, warfare = MS.GetEffectiveApplyChance()
-
-                                -- ramp: 0.25..1.0 as HP drops deeper below thr
-                                local ramp = 1.0
-                                if thr > 0 then
-                                    local x = (hp or 0) / thr
-                                    if x < 0 then x = 0 elseif x > 1 then x = 1 end
-                                    ramp = 0.25 + (1.0 - x) * 0.75
-                                end
-
-                                local chance = baseChance * ramp
-                                if cfg.applyChanceMax and chance > cfg.applyChanceMax then
-                                    chance = cfg.applyChanceMax
-                                end
-
-                                if cfg.logging and cfg.logging.probe then
-                                    MS.LogProbe(("edge name=%s hp=%.3f thr=%.2f ramp=%.2f p=%.2f")
-                                        :format(name, hp or -1, thr, ramp, chance))
-                                end
-
-                                -- single roll → single apply
-                                stat.rolled = stat.rolled + 1
-                                if (hp or 0) > 0 and math.random() < chance then
-                                    local applied = false
-                                    if MS_Unconscious and MS_Unconscious.Apply then
-                                        local okA, resA = pcall(MS_Unconscious.Apply, e,
-                                            cfg.buffId or "unconscious_permanent")
-                                        applied = okA and resA or false
-                                        if (not okA) and cfg.logging and cfg.logging.core then
-                                            MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
                                         end
-                                    end
-                                    if applied then
-                                        stat.applied = stat.applied + 1
-                                        MS.LogApply("KO applied '" .. tostring(cfg.buffId or "unconscious_permanent") ..
-                                            "' name=" .. name ..
-                                            " hp=" .. string.format("%.2f", hp or -1) ..
-                                            (cfg.scaleWithWarfare and (" (warfare=" .. tostring(warfare) ..
-                                                    ", p=" .. string.format("%.2f", chance) .. ")")
-                                                or (" (p=" .. string.format("%.2f", chance) .. " static)")))
-                                        if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
-                                        armCooldown(e, tnow)
+                                        if applied then
+                                            stat.applied = stat.applied + 1
+                                            MS.LogApply("KO applied '" ..
+                                                tostring(cfg.buffId or "unconscious_permanent") ..
+                                                "' name=" .. name ..
+                                                " hp=" .. string.format("%.2f", hp or -1) ..
+                                                (cfg.scaleWithWarfare and (" (warfare=" .. tostring(warfare) ..
+                                                        ", p=" .. string.format("%.2f", chance) .. ")")
+                                                    or (" (p=" .. string.format("%.2f", chance) .. " static)")))
+                                            if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                            armCooldown(e, tnow)
+                                        else
+                                            if cfg.logging and cfg.logging.skip then
+                                                MS.LogSkip("rollFail name=" ..
+                                                    name .. " (edge)")
+                                            end
+                                        end
                                     else
                                         if cfg.logging and cfg.logging.skip then
                                             MS.LogSkip("rollFail name=" ..
                                                 name .. " (edge)")
                                         end
                                     end
-                                else
-                                    if cfg.logging and cfg.logging.skip then
-                                        MS.LogSkip("rollFail name=" ..
-                                            name .. " (edge)")
-                                    end
-                                end
-                            elseif cfg.logging and cfg.logging.skip then
-                                -- No edge this tick
-                                if (hp or 1) > thr then
-                                    -- still above threshold, just informational
-                                    MS.LogSkip("hpAboveThreshold name=" ..
-                                        name .. " hp=" .. string.format("%.3f", hp or -1))
-                                else
-                                    local prevStr = (hpPrev ~= nil) and string.format("%.3f", hpPrev) or "nil"
-                                    MS.LogSkip("belowThresholdNoEdge name=" .. name ..
-                                        " hpPrev=" .. prevStr ..
-                                        " hp=" .. string.format("%.3f", hp or -1) ..
-                                        " thr=" .. tostring(thr))
+                                elseif cfg.logging and cfg.logging.skip then
+                                    -- No edge this tick
+                                    if (hp or 1) > thr then
+                                        -- still above threshold, just informational
+                                        MS.LogSkip("hpAboveThreshold name=" ..
+                                            name .. " hp=" .. string.format("%.3f", hp or -1))
+                                    else
+                                        local prevStr = (hpPrev ~= nil) and string.format("%.3f", hpPrev) or "nil"
+                                        MS.LogSkip("belowThresholdNoEdge name=" .. name ..
+                                            " hpPrev=" .. prevStr ..
+                                            " hp=" .. string.format("%.3f", hp or -1) ..
+                                            " thr=" .. tostring(thr))
 
-                                    -- One-time grace roll on first sighting under threshold (no ownership gating)
-                                    if hpPrev == nil then
-                                        local baseChance, warfare = MS.GetEffectiveApplyChance()
+                                        -- One-time grace roll on first sighting under threshold (no ownership gating)
+                                        if hpPrev == nil then
+                                            local baseChance, warfare = MS.GetEffectiveApplyChance()
 
-                                        local ramp = 1.0
-                                        if thr > 0 then
-                                            local x = (hp or 0) / thr
-                                            if x < 0 then x = 0 elseif x > 1 then x = 1 end
-                                            ramp = 0.25 + (1.0 - x) * 0.75
-                                        end
-
-                                        local chance = baseChance * ramp
-                                        if cfg.applyChanceMax and chance > cfg.applyChanceMax then
-                                            chance = cfg.applyChanceMax
-                                        end
-
-                                        if cfg.logging and cfg.logging.probe then
-                                            MS.LogProbe(("graceRoll name=%s hp=%.3f thr=%.2f ramp=%.2f p=%.2f")
-                                                :format(name, hp or -1, thr, ramp, chance))
-                                        end
-
-                                        stat.rolled = stat.rolled + 1
-                                        if (hp or 0) > 0 and math.random() < chance then
-                                            local applied = false
-                                            if MS_Unconscious and MS_Unconscious.Apply then
-                                                local okA, resA = pcall(MS_Unconscious.Apply, e,
-                                                    cfg.buffId or "unconscious_permanent")
-                                                applied = okA and resA or false
-                                                if (not okA) and cfg.logging and cfg.logging.core then
-                                                    MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
-                                                end
+                                            local ramp = 1.0
+                                            if thr > 0 then
+                                                local x = (hp or 0) / thr
+                                                if x < 0 then x = 0 elseif x > 1 then x = 1 end
+                                                ramp = 0.25 + (1.0 - x) * 0.75
                                             end
-                                            if applied then
-                                                stat.applied = stat.applied + 1
-                                                MS.LogApply("KO applied (grace) '" ..
-                                                    tostring(cfg.buffId or "unconscious_permanent") ..
-                                                    "' name=" .. name ..
-                                                    " hp=" .. string.format("%.2f", hp or -1) ..
-                                                    (cfg.scaleWithWarfare
-                                                        and (" (warfare=" .. tostring(warfare) ..
-                                                            ", p=" .. string.format("%.2f", chance) .. ")")
-                                                        or (" (p=" .. string.format("%.2f", chance) .. " static)")))
-                                                if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
-                                                armCooldown(e, tnow)
+
+                                            local chance = baseChance * ramp
+                                            if cfg.applyChanceMax and chance > cfg.applyChanceMax then
+                                                chance = cfg.applyChanceMax
+                                            end
+
+                                            if cfg.logging and cfg.logging.probe then
+                                                MS.LogProbe(("graceRoll name=%s hp=%.3f thr=%.2f ramp=%.2f p=%.2f")
+                                                    :format(name, hp or -1, thr, ramp, chance))
+                                            end
+
+                                            stat.rolled = stat.rolled + 1
+                                            if (hp or 0) > 0 and math.random() < chance then
+                                                local applied = false
+                                                if MS_Unconscious and MS_Unconscious.Apply then
+                                                    local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                                        cfg.buffId or "unconscious_permanent")
+                                                    applied = okA and resA or false
+                                                    if (not okA) and cfg.logging and cfg.logging.core then
+                                                        MS.LogCore("ERR: step=Unconscious.Apply name=" .. name)
+                                                    end
+                                                end
+                                                if applied then
+                                                    stat.applied = stat.applied + 1
+                                                    MS.LogApply("KO applied (grace) '" ..
+                                                        tostring(cfg.buffId or "unconscious_permanent") ..
+                                                        "' name=" .. name ..
+                                                        " hp=" .. string.format("%.2f", hp or -1) ..
+                                                        (cfg.scaleWithWarfare
+                                                            and (" (warfare=" .. tostring(warfare) ..
+                                                                ", p=" .. string.format("%.2f", chance) .. ")")
+                                                            or (" (p=" .. string.format("%.2f", chance) .. " static)")))
+                                                    if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                                    armCooldown(e, tnow)
+                                                else
+                                                    if cfg.logging and cfg.logging.skip then
+                                                        MS.LogSkip("rollFail name=" ..
+                                                            name .. " (grace)")
+                                                    end
+                                                end
                                             else
                                                 if cfg.logging and cfg.logging.skip then
                                                     MS.LogSkip("rollFail name=" ..
                                                         name .. " (grace)")
                                                 end
-                                            end
-                                        else
-                                            if cfg.logging and cfg.logging.skip then
-                                                MS.LogSkip("rollFail name=" ..
-                                                    name .. " (grace)")
                                             end
                                         end
                                     end
