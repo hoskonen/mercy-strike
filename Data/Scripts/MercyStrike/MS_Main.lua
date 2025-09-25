@@ -171,10 +171,73 @@ local function CombatTick()
                                 end
                             end
 
-                            local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
+                            -- Death-like KO: intercept lethal or near-lethal drops
+                            if cfg.deathLikeKO and (hp or 0) > 0 then
+                                local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.04
+                                local bigDrop   = false
+                                if hpPrev ~= nil then
+                                    local minDelta = tonumber(cfg.deathLikeMinDelta) or 0.18
+                                    bigDrop = (hpPrev > (hp or 0)) and ((hpPrev - (hp or 0)) >= minDelta)
+                                end
+                                local lethalNow = (hp or 0) <= lethalThr
+                                if (lethalNow or bigDrop) then
+                                    local pass = true
+                                    if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
+                                        local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e,
+                                            cfg.ownershipWindowS or 1.2)
+                                        pass = okOwn and (resOwn and true or false) or false
+                                    end
+                                    if pass then
+                                        if cfg.logging and cfg.logging.probe then
+                                            MS.LogProbe(("deathLike arm name=%s hpPrev=%s hp=%.3f lethalNow=%s bigDrop=%s")
+                                                :format(name, tostring(hpPrev), hp or -1, tostring(lethalNow),
+                                                    tostring(bigDrop)))
+                                        end
+
+                                        -- dynamic micro-delay: snap fast at true lethal, normal otherwise
+                                        local delay = tonumber(cfg.deathLikeDelayMs) or 120
+                                        if lethalNow then
+                                            delay = math.min(delay, 40) -- ~instant when truly lethal
+                                        end
+
+                                        -- mark this target so the edge path won't also roll this tick
+                                        if MercyStrike and MercyStrike._per and e and e.id then
+                                            MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+                                            MercyStrike._per[e.id]._armedDeathLike = true
+                                        end
+
+                                        -- tiny pre-clamp so engine doesn't mark as dead before KO lands
+                                        -- (helper defined in MS_Util.lua below)
+                                        if MS and MS.ClampHealthMin and lethalNow then
+                                            MS.ClampHealthMin(e, (cfg.deathLikeLethalThr or 0.04) * 0.6)
+                                        end
+
+                                        Script.SetTimer(delay, function()
+                                            -- apply KO if still alive and valid
+                                            local applied = false
+                                            if MS_Unconscious and MS_Unconscious.Apply then
+                                                local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                                    cfg.buffId or "unconscious_permanent")
+                                                applied = okA and resA or false
+                                                if (not okA) and cfg.logging and cfg.logging.core then
+                                                    MS.LogCore("ERR: step=Unconscious.Apply (deathLike) name=" .. name)
+                                                end
+                                            end
+                                            if applied then
+                                                if cfg.logging and cfg.logging.probe then
+                                                    MS.LogProbe("deathLike KO applied name=" .. name)
+                                                end
+                                                if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                                armCooldown(e, nowSec())
+                                            end
+                                        end)
+                                    end
+                                end
+                            end
+
 
                             local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
-                            if crossed then
+                            if (not (MercyStrike and MercyStrike._per and e and e.id and MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike)) and crossed then
                                 stat.edges = stat.edges + 1
 
                                 -- ownership (logging only; based on HitSense stamps)

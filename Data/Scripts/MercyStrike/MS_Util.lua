@@ -365,3 +365,24 @@ function MS.WasRecentlyHitByPlayer(e, windowS)
     end
     return false
 end
+
+-- Ensure entity HP is at least (floorNorm * max), where floorNorm is 0..1
+-- Ensure entity HP is at least (floorNorm * max), where floorNorm is 0..1
+function MS.ClampHealthMin(e, floorNorm)
+    if not e then return end
+    local s = e.soul
+    if not s then return end
+
+    local okM, maxHp = pcall(function() return s:GetHealthMax() end)
+    local okH, curHp = pcall(function() return s:GetHealth() end)
+    if not (okM and okH) then return end
+    if not (maxHp and curHp) then return end
+
+    local n = tonumber(floorNorm) or 0
+    if n < 0 then n = 0 elseif n > 1 then n = 1 end
+    local floorAbs = n * maxHp
+
+    if curHp < floorAbs then
+        pcall(function() s:SetHealth(floorAbs) end)
+    end
+end
