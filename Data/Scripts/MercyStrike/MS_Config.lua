@@ -36,14 +36,17 @@ local DEFAULT = {
     deathLikeKO           = true,  -- master toggle
     deathLikeDelayMs      = 120,   -- tiny visual delay to "sell" the kill
     deathLikeLethalThr    = 0.05,  -- <= 4% HP is lethal territory
-    deathLikeMinDelta     = 0.30,  -- or a big HP drop this tick (prev-now >= 0.18)
+    deathLikeMinDelta     = 0.35,  -- or a big HP drop this tick (prev-now >= 0.18)
     deathLikeRequireStamp = false, -- require a recent player stamp (HitSense) to trigger
     ownershipWindowS      = 2.0,   -- "recent" window for stamps
 
+    -- KO maintenance floor (normalized 0..1)
+    koFloorNorm           = 0.03, -- hold KO'd targets at ~3% of max HP
+
     -- HitSense tuning (ownership stamps)
-    hitsenseTickMs        = 200, -- poll rate for HitSense (ms)
+    hitsenseTickMs        = 200,  -- poll rate for HitSense (ms)
     hitsenseDropMin       = 0.10, -- ≥10% hp drop counts as a hit
-    hitsenseMaxDistance   = 9.0, -- meters from player to target for a valid stamp
+    hitsenseMaxDistance   = 9.0,  -- meters from player to target for a valid stamp
 
     -- hard cap (safety; optional)
     applyChanceMax        = 1.00, -- don’t exceed 50% total (tweak if you like)

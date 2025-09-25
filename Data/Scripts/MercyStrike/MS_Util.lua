@@ -203,20 +203,9 @@ function MS.GetEffectiveApplyChance()
     return ch, lvl
 end
 
-function MS.ClampHealthPostKO(e, floorPct)
-    local soul = e and e.soul
-    if not soul or not soul.GetHealth or not soul.GetHealthMax then return end
-
-    local okH, H = pcall(soul.GetHealth, soul)
-    local okM, M = pcall(soul.GetHealthMax, soul)
-    if not (okH and okM and H and M) then return end
-
-    local pct = tonumber(floorPct or 0.05) or 0.05
-    if pct < 0 then pct = 0 end
-    if pct > 0.5 then pct = 0.5 end
-
-    local floor = pct * M
-    if H < floor then pcall(soul.SetHealth, soul, floor) end
+-- Raise HP to at least koFloorNorm * max (used after KO and on maintenance)
+function MS.ClampHealthPostKO(e)
+    return MS.ClampHealthMin(e) -- uses config.koFloorNorm
 end
 
 -- #ms_reload_cfg()  → reloads DEFAULT
@@ -367,17 +356,22 @@ function MS.WasRecentlyHitByPlayer(e, windowS)
 end
 
 -- Ensure entity HP is at least (floorNorm * max), floorNorm in [0..1]
+-- Raise HP to at least maxHp * floorNorm (0..1). If floorNorm is nil, use config.koFloorNorm.
 function MS.ClampHealthMin(e, floorNorm)
-    if not e then return end
+    if not (e and e.soul) then return end
     local s = e.soul
-    if not s then return end
 
+    -- pcall+closures so we bind both return values correctly
     local okM, maxHp = pcall(function() return s:GetHealthMax() end)
     local okH, curHp = pcall(function() return s:GetHealth() end)
     if not (okM and okH and maxHp and curHp) then return end
 
-    local n = tonumber(floorNorm) or 0
+    local n = floorNorm
+    if n == nil then
+        n = tonumber(MS.config and MS.config.koFloorNorm) or 0.03
+    end
     if n < 0 then n = 0 elseif n > 1 then n = 1 end
+
     local floorAbs = n * maxHp
     if curHp < floorAbs then
         pcall(function() s:SetHealth(floorAbs) end)
