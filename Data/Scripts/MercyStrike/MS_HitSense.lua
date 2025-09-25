@@ -15,7 +15,7 @@ end
 
 function HS.Stop()
     if not HS._timer then return end
-    MS_Poller.Stop("hitsense")
+    MS_Poller.StopNamed("hitsense")
     HS._timer = nil
 end
 

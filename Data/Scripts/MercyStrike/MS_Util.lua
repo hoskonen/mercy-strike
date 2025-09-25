@@ -351,3 +351,17 @@ function MercyStrike.IsRecentPlayerHit(e, player, windowS)
 
     return false
 end
+
+-- Stamp-only ownership (no heuristics)
+function MS.WasRecentlyHitByPlayer(e, windowS)
+    if not (e and e.id) then return false end
+    local S = MS._per and MS._per[e.id]
+    if not S then return false end
+    local wnd = tonumber(windowS) or 1.0
+    local tnow = (MS.NowTime and MS.NowTime()) or os.clock()
+    if S.lastHitBy and S.lastHitAt and (tnow - S.lastHitAt) <= wnd then
+        local p = MS.GetPlayer and MS.GetPlayer()
+        if p and p.id and S.lastHitBy == p.id then return true end
+    end
+    return false
+end

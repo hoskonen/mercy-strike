@@ -82,7 +82,7 @@ local function CombatTick()
             local animal = false
             if not cfg.includeAnimals then
                 local okA, isAnimal = pcall(MS.IsAnimalByName, e)
-                animal = (not okA) and true or (not not isAnimal)
+                animal = okA and (isAnimal and true or false) or false
                 if animal then
                     stat.filtered = stat.filtered + 1
                     if animal and cfg.logging and cfg.logging.skip then
@@ -176,6 +176,14 @@ local function CombatTick()
                             local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
                             if crossed then
                                 stat.edges = stat.edges + 1
+
+                                -- ownership (logging only; based on HitSense stamps)
+                                local isYours = false
+                                if MS and MS.WasRecentlyHitByPlayer then
+                                    local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e, cfg.ownershipWindowS or 1.2)
+                                    isYours = okOwn and (resOwn and true or false) or false
+                                end
+                                if isYours then stat.yours = stat.yours + 1 end
 
                                 -- compute effective chance (static or scaled)
                                 local baseChance, warfare = MS.GetEffectiveApplyChance()
@@ -290,12 +298,16 @@ local function CombatTick()
                                                 if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
                                                 armCooldown(e, tnow)
                                             else
-                                                if cfg.logging and cfg.logging.skip then MS.LogSkip("rollFail name=" ..
-                                                    name .. " (grace)") end
+                                                if cfg.logging and cfg.logging.skip then
+                                                    MS.LogSkip("rollFail name=" ..
+                                                        name .. " (grace)")
+                                                end
                                             end
                                         else
-                                            if cfg.logging and cfg.logging.skip then MS.LogSkip("rollFail name=" ..
-                                                name .. " (grace)") end
+                                            if cfg.logging and cfg.logging.skip then
+                                                MS.LogSkip("rollFail name=" ..
+                                                    name .. " (grace)")
+                                            end
                                         end
                                     end
                                 end
