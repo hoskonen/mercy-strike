@@ -41,7 +41,7 @@ local DEFAULT = {
 
     -- Death-like tuning
     deathLikeModeAND       = true, -- require lethalNow AND bigDrop to arm death-like
-    deathLikeMinDelta      = 0.45, -- raise the "big dip" to make one-hit sleeps rarer
+    deathLikeMinDelta      = 0.35, -- raise the "big dip" to make one-hit sleeps rarer
 
     -- KO maintenance strategy
     koMaintainOnlyLast     = true, -- maintain only the most recent KO every tick
