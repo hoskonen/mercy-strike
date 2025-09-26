@@ -203,11 +203,6 @@ function MS.GetEffectiveApplyChance()
     return ch, lvl
 end
 
--- Raise HP to at least koFloorNorm * max (used after KO and on maintenance)
-function MS.ClampHealthPostKO(e)
-    return MS.ClampHealthMin(e) -- uses config.koFloorNorm
-end
-
 -- #ms_reload_cfg()  → reloads DEFAULT
 function ms_reload_cfg()
     if MercyStrike and MercyStrike.ReloadConfig then MercyStrike.ReloadConfig() end
@@ -357,11 +352,12 @@ end
 
 -- Ensure entity HP is at least (floorNorm * max), floorNorm in [0..1]
 -- Raise HP to at least maxHp * floorNorm (0..1). If floorNorm is nil, use config.koFloorNorm.
+-- Raise HP to at least maxHp * floorNorm (0..1).
+-- If floorNorm is nil, use config.koFloorNorm (or fall back to 0.03).
 function MS.ClampHealthMin(e, floorNorm)
     if not (e and e.soul) then return end
     local s = e.soul
 
-    -- pcall+closures so we bind both return values correctly
     local okM, maxHp = pcall(function() return s:GetHealthMax() end)
     local okH, curHp = pcall(function() return s:GetHealth() end)
     if not (okM and okH and maxHp and curHp) then return end
@@ -376,4 +372,63 @@ function MS.ClampHealthMin(e, floorNorm)
     if curHp < floorAbs then
         pcall(function() s:SetHealth(floorAbs) end)
     end
+end
+
+function MS.ClampHealthPostKO(e)
+    return MS.ClampHealthMin(e) -- delegates to the same floor
+end
+
+-- Boss detection: name patterns (substring, case-insensitive) and optional level gate
+function MS.IsBoss(e)
+    local cfg = MS.config and MS.config.boss or {}
+    if not e then return false end
+
+    -- name pattern check
+    local name = (e.GetName and e:GetName()) or ""
+    local pats = cfg.namePatterns or {}
+    name = tostring(name):lower()
+    for i = 1, #pats do
+        local pat = tostring(pats[i] or ""):lower()
+        if pat ~= "" and name:find(pat, 1, true) then
+            return true
+        end
+    end
+
+    -- optional level check
+    local minLevel = tonumber(cfg.minLevel)
+    if minLevel then
+        local s = e.soul
+        if s and s.GetLevel then
+            local okL, lvl = pcall(s.GetLevel, s)
+            if okL and tonumber(lvl or 0) >= minLevel then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- Generic actor stat fetch (by id string), returns 0 if missing
+local function _getStatSafe(soul, statId)
+    if not (soul and statId) then return 0 end
+    -- Try common patterns; adapt if your engine exposes another getter
+    if soul.GetStatLevel then
+        local ok, v = pcall(soul.GetStatLevel, soul, statId)
+        if ok and v then return tonumber(v) or 0 end
+    end
+    -- Fallback: try property accessors if any exist in your build
+    return 0
+end
+
+function MS.GetStrengthLevelFromSoul(soul)
+    local cfg = MS.config or {}
+    local id  = cfg.strengthStatId or "strength"
+    return _getStatSafe(soul, id)
+end
+
+function MS.GetPlayerStrength()
+    local p = MS.GetPlayer and MS.GetPlayer()
+    local s = p and p.soul
+    return MS.GetStrengthLevelFromSoul(s)
 end

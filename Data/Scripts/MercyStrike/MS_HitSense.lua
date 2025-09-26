@@ -4,10 +4,11 @@ local MS       = MercyStrike
 local cfg      = MS and MS.config or {}
 local TICK_MS  = tonumber(cfg.hitsenseTickMs) or 200
 local DROP_MIN = tonumber(cfg.hitsenseDropMin) or 0.10
-local RADIUS_M = tonumber(cfg.hitsenseMaxDistance) or 7.0
+local RADIUS_M = (MercyStrike and MercyStrike.config and MercyStrike.config.hitsenseMaxDistance) or 6.0
 
-MS.HitSense    = MS.HitSense or {}
-local HS       = MS.HitSense
+
+MS.HitSense = MS.HitSense or {}
+local HS    = MS.HitSense
 
 local function now()
     return (MS.NowTime and MS.NowTime()) or os.clock()
@@ -80,55 +81,35 @@ end
 
 function HS.Tick()
     local stampedThisTick = 0
-
-    -- Early outs so the very first tick can't explode
     if not MS or not MS.GetPlayer then return end
     local player = MS.GetPlayer(); if not player then return end
 
-    -- Get the same set KO uses; if not available yet, skip this tick
-    local near = {}
-    if MS.GetNearbyHostiles then
-        near = MS.GetNearbyHostiles(player) or {}
-    elseif MS.GetNearbyEntities then
-        near = MS.GetNearbyEntities(player) or {}
-    else
-        return
-    end
+    -- Souls-in-sphere scan (same as CombatTick)
+    local scanR = (MS.config and MS.config.scanRadiusM) or 10.0
+    local listOk, near = pcall(MS.ScanSoulsInSphere, scanR, 48)
+    if not listOk or type(near) ~= "table" or #near == 0 then return end
 
     for i = 1, #near do
-        local e = near[i]
-        local id = e and e.id
+        local rec = near[i]; local e = rec and rec.e; local id = e and e.id
         if id then
             MS._per = MS._per or {}
             local S = MS._per[id] or {}; MS._per[id] = S
-
-            -- HP accessor: use the correct helper name
             local okH, hp = pcall(MS.GetNormalizedHp, e)
             if okH and hp then
                 local prev = S._hsPrevHp; S._hsPrevHp = hp
                 if prev and prev > 0 then
                     local drop = prev - hp
-                    if drop > 0 and withinR2(player, e, RADIUS_M) then
-                        if drop >= DROP_MIN then
-                            logStamp(e, player, "HitSense", string.format("max=%.1f", RADIUS_M))
-
-                            stampedThisTick = stampedThisTick + 1
-                            MS.RecordHit(id, player.id)
-                            if MS.config.logging and MS.config.logging.probe then
-                                MS.LogProbe(("hitSense stamp name=%s drop=%.2f dist<=%.1f")
-                                    :format(tostring(e.GetName and e:GetName() or id), drop, RADIUS_M))
-                            end
-                        end
+                    if drop >= DROP_MIN and withinR2(player, e, RADIUS_M) then
+                        logStamp(e, player, "HitSense", string.format(" drop=%.2f", drop))
+                        stampedThisTick = stampedThisTick + 1
+                        MS.RecordHit(id, player.id)
                     end
                 end
             end
         end
     end
 
-    do
-        local cfg = MS and MS.config or {}
-        if cfg.logging and cfg.logging.hitsense then
-            MS.LogProbe(string.format("[HitSense] tick stamped=%d", stampedThisTick))
-        end
+    if MS.config and MS.config.logging and MS.config.logging.hitsense then
+        MS.LogProbe(string.format("[HitSense] tick stamped=%d", stampedThisTick))
     end
 end

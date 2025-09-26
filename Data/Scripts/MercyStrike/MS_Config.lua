@@ -1,61 +1,85 @@
 -- Scripts/MercyStrike/MS_Config.lua  (Lua 5.1)
 local DEFAULT = {
     -- Polling (ms)
-    pollWorldMs           = 3500, -- slow outer poller (detect combat)
-    combatPollMs          = 200,  -- fast inner poller (in combat)
-    enabled               = true,
+    pollWorldMs            = 3500, -- slow outer poller (detect combat)
+    combatPollMs           = 200,  -- fast inner poller (in combat)
+    enabled                = true,
 
     -- Scan
-    scanRadiusM           = 10.0,
-    maxList               = 48,
-    useAIHostile          = false,
+    scanRadiusM            = 10.0,
+    maxList                = 48,
+    useAIHostile           = false,
 
     -- scan budget
-    maxPerTick            = 8,   -- scan at most N NPCs per combat tick
-    rescanCooldownS       = 0.5, -- don't re-check the same NPC again for this many seconds
+    maxPerTick             = 8,   -- scan at most N NPCs per combat tick
+    rescanCooldownS        = 0.5, -- don't re-check the same NPC again for this many seconds
 
     -- Filters
-    onlyHostile           = true,
-    onlyWithSoul          = true,
-    includeAnimals        = false,
+    onlyHostile            = true,
+    onlyWithSoul           = true,
+    includeAnimals         = false,
 
     -- KO health safety
-    doHealthClamp         = true, -- bump HP up a bit after KO if engine supports it
-    minHpAfterKO          = 0.10, -- normalized floor (10% of max HP)
-    minHpAbsolute         = 5,    -- absolute fallback floor (HP points)
+    doHealthClamp          = true, -- bump HP up a bit after KO if engine supports it
+    minHpAfterKO           = 0.10, -- normalized floor (10% of max HP)
+    minHpAbsolute          = 5,    -- absolute fallback floor (HP points)
 
     -- KO probability (scales with Warfare)
-    hpThreshold           = 0.15,  -- default: 0.15
-    applyBaseChance       = 0.99,  -- 5% at Warfare 0
-    applyBonusAtCap       = 0.15,  -- +15% at Warfare cap → total 20% at cap
-    skillCap              = 30,    -- Warfare level cap used for scaling
-    skillIdWarfare        = "fencing",
-    scaleWithWarfare      = false, -- default: true / set false to freeze chance to applyBaseChance
+    hpThreshold            = 0.15,  -- default: 0.15
+    applyBaseChance        = 0.99,  -- 5% at Warfare 0
+    applyBonusAtCap        = 0.15,  -- +15% at Warfare cap → total 20% at cap
+    skillCap               = 30,    -- Warfare level cap used for scaling
+    skillIdWarfare         = "fencing",
+    scaleWithWarfare       = false, -- default: true / set false to freeze chance to applyBaseChance
 
     -- Death-like KO (intercept lethal hits and KO instead)
-    deathLikeKO           = true,  -- master toggle
-    deathLikeDelayMs      = 120,   -- tiny visual delay to "sell" the kill
-    deathLikeLethalThr    = 0.05,  -- <= 4% HP is lethal territory
-    deathLikeMinDelta     = 0.35,  -- or a big HP drop this tick (prev-now >= 0.18)
-    deathLikeRequireStamp = false, -- require a recent player stamp (HitSense) to trigger
-    ownershipWindowS      = 2.0,   -- "recent" window for stamps
+    deathLikeKO            = true,  -- master toggle
+    deathLikeDelayMs       = 120,   -- tiny visual delay to "sell" the kill
+    deathLikeLethalThr     = 0.05,  -- <= 4% HP is lethal territory
+    deathLikeRequireStamp  = false, -- require a recent player stamp (HitSense) to trigger
+    ownershipWindowS       = 2.0,   -- "recent" window for stamps
 
-    -- KO maintenance floor (normalized 0..1)
-    koFloorNorm           = 0.03, -- hold KO'd targets at ~3% of max HP
+    -- Death-like tuning
+    deathLikeModeAND       = true, -- require lethalNow AND bigDrop to arm death-like
+    deathLikeMinDelta      = 0.45, -- raise the "big dip" to make one-hit sleeps rarer
+
+    -- KO maintenance strategy
+    koMaintainOnlyLast     = true, -- maintain only the most recent KO every tick
+    koMaintainSweepNTicks  = 10,   -- also sweep all KO'd every N combat ticks (0/false to disable)
+    koMaintainNearPlayerM  = 12.0, -- always maintain KO'd if within this many meters of player
+
+    -- KO maintenance floor
+    koClampOnApplyNorm     = 0.06, -- higher buffer on the KO frame
+    koFloorNorm            = 0.03, -- sustained floor during maintenance
+
+    -- Big-dip extra roll (applies only when bigDrop=TRUE and lethalNow=FALSE)
+    bigDipExtraRollEnabled = true,
+    bigDipBaseChance       = 0.02, -- ~2% base
+    bigDipBonusAtCap       = 0.31, -- +33% at Strength cap -> up to ~66%
+    strengthCap            = 20,   -- cap for scaling
+    strengthStatId         = "strength",
 
     -- HitSense tuning (ownership stamps)
-    hitsenseTickMs        = 200,  -- poll rate for HitSense (ms)
-    hitsenseDropMin       = 0.10, -- ≥10% hp drop counts as a hit
-    hitsenseMaxDistance   = 9.0,  -- meters from player to target for a valid stamp
+    hitsenseTickMs         = 200,  -- poll rate for HitSense (ms)
+    hitsenseDropMin        = 0.10, -- ≥10% hp drop counts as a hit
+    hitsenseMaxDistance    = 9.0,  -- meters from player to target for a valid stamp
 
     -- hard cap (safety; optional)
-    applyChanceMax        = 1.00, -- don’t exceed 50% total (tweak if you like)
+    applyChanceMax         = 1.00, -- don’t exceed 50% total (tweak if you like)
+
+    -- boss protection
+    boss                   = {
+        blockDeathLike   = true,       -- no death-like on bosses
+        edgeChanceFactor = 0.25,       -- 25% of normal edge chance on bosses
+        namePatterns     = { "boss" }, -- add your uniques
+        --minLevel         = 15,         -- treat >= level 15 as boss-ish (tweak)
+    },
 
     -- Buff to apply
-    buffId                = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
-    buffDuration          = -1,
+    buffId                 = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
+    buffDuration           = -1,
 
-    logging               = { core = true, probe = true, apply = true, skip = true, hitsense = true },
+    logging                = { core = true, probe = true, apply = true, skip = true, hitsense = true },
 }
 
 -- shallow copy (Lua 5.1)

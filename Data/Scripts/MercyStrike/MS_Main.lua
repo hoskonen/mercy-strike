@@ -11,16 +11,14 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Util.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Unconscious.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Poller.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_HitSense.lua")
--- Start ownership sampling first (cheap)
-if MercyStrike and MercyStrike.HitSense and MercyStrike.HitSense.Start then
-    MercyStrike.HitSense.Start()
-end
 
 -- ------------------------
 -- State
 -- ------------------------
 local combatActive = false
 local rescanUntil = {} -- ent.id -> time (sec) before reconsidering
+MercyStrike._combatEndTimer = MercyStrike._combatEndTimer or nil
+
 local function nowSec() return math.floor((os.clock() or 0) + 0.5) end
 
 local function cooldownActive(e, tnow)
@@ -36,7 +34,10 @@ end
 
 local function CombatTick()
     -- trust world detector; don't call IsInCombat() here
+
     if not combatActive then return end
+
+    MS._tickIndex = (MS._tickIndex or 0) + 1
 
     local cfg = MS.config or {}
 
@@ -115,12 +116,44 @@ local function CombatTick()
                         MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
                         local S = MercyStrike._per[e.id]
 
+                        local isBoss = MS.IsBoss and MS.IsBoss(e) or false
+
                         if S.koApplied then
-                            -- Maintain KO floor each tick so they don’t bleed out
-                            if MS and MS.ClampHealthMin then
-                                MS.ClampHealthMin(e) -- uses config.koFloorNorm
-                            elseif MS and MS.ClampHealthPostKO then
-                                MS.ClampHealthPostKO(e)
+                            local cfg = MS.config or {}
+                            local maintain = true
+
+                            if cfg.koMaintainOnlyLast then
+                                maintain = (MercyStrike.lastKOId == e.id)
+                                -- allow periodic sweeps
+                                local n = tonumber(cfg.koMaintainSweepNTicks) or 0
+                                if n and n > 0 then
+                                    MS._tickIndex = (MS._tickIndex or 0)
+                                    if (MS._tickIndex % n) == 0 then
+                                        maintain = true
+                                    end
+                                end
+                                -- always maintain if close to player (safety + looks natural)
+                                local r = tonumber(cfg.koMaintainNearPlayerM) or 0
+                                if r > 0 then
+                                    local player = System.GetEntity and System.GetEntity(g_localActorId or 0)
+                                    if player and e.GetWorldPos and player.GetWorldPos then
+                                        local pe, pp = { 0, 0, 0 }, { 0, 0, 0 }
+                                        pcall(function() e:GetWorldPos(pe) end)
+                                        pcall(function() player:GetWorldPos(pp) end)
+                                        local dx, dy, dz = pe[1] - pp[1], pe[2] - pp[2], pe[3] - pp[3]
+                                        if (dx * dx + dy * dy + dz * dz) <= (r * r) then
+                                            maintain = true
+                                        end
+                                    end
+                                end
+                            end
+
+                            if maintain then
+                                if MS and MS.ClampHealthMin then
+                                    MS.ClampHealthMin(e) -- uses koFloorNorm
+                                elseif MS and MS.ClampHealthPostKO then
+                                    MS.ClampHealthPostKO(e)
+                                end
                             end
                         else
                             seen = seen + 1
@@ -162,7 +195,7 @@ local function CombatTick()
                                     -- Track previous HP → detect crossing from above → below threshold
                                     local hpPrev = nil
                                     if MercyStrike.TrackHp then
-                                        hpPrev = MercyStrike.TrackHp(e, hp)         -- first return only
+                                        hpPrev = MercyStrike.TrackHp(e, hp) -- first return only
                                     end
 
                                     -- ensure per-entity scratch and record current hp once
@@ -187,74 +220,110 @@ local function CombatTick()
                                     end
 
                                     -- Death-like KO: intercept lethal or near-lethal drops
-                                    if cfg.deathLikeKO and (hp ~= nil) then
-                                        local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.04
-                                        local bigDrop = false
-                                        if hpPrev ~= nil then
-                                            local minDelta = tonumber(cfg.deathLikeMinDelta) or 0.18
-                                            bigDrop = (hpPrev > (hp or 0)) and ((hpPrev - (hp or 0)) >= minDelta)
-                                        end
-
+                                    do
+                                        -- derive all signals once
+                                        local lethalThr = tonumber(cfg.deathLikeLethalThr) or 0.05
+                                        local dropMin   = tonumber(cfg.deathLikeMinDelta) or 0.30
+                                        local atZero    = (hp or 0) <= 0
                                         local lethalNow = (hp or 0) <= lethalThr
-                                        local atZero    = (hp or 0) <= 0.0
+                                        local bigDrop   = (hpPrev ~= nil and hp ~= nil) and ((hpPrev - hp) >= dropMin) or
+                                            false
 
-                                        if (lethalNow or bigDrop) then
-                                            -- (we're already in the 'not alreadyKO' branch; single guard for safety)
-                                            if S and S.koApplied then
-                                                if MS and MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
-                                            else
-                                                local pass = true
-                                                if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
-                                                    local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e,
-                                                        cfg.ownershipWindowS or 1.2)
-                                                    pass = okOwn and (resOwn and true or false) or false
+                                        if cfg.deathLikeKO and (hp ~= nil) then
+                                            -- Bosses: block death-like entirely if configured
+                                            if isBoss and cfg.boss and cfg.boss.blockDeathLike then
+                                                if cfg.logging and cfg.logging.probe then
+                                                    MS.LogProbe("deathLike blocked (boss) name=" .. name)
                                                 end
-                                                if pass then
-                                                    if cfg.logging and cfg.logging.probe then
-                                                        MS.LogProbe(("deathLike arm name=%s hpPrev=%s hp=%.3f lethalNow=%s bigDrop=%s")
-                                                            :format(name, tostring(hpPrev), hp or -1,
-                                                                tostring(lethalNow),
-                                                                tostring(bigDrop)))
+                                            else
+                                                -- AND/OR mode
+                                                local requireBoth = (cfg.deathLikeModeAND == true)
+                                                local shouldArm   = requireBoth and (lethalNow and bigDrop) or
+                                                    (lethalNow or bigDrop)
+
+                                                if shouldArm then
+                                                    -- ownership gate
+                                                    local pass = true
+                                                    if cfg.deathLikeRequireStamp and MS and MS.WasRecentlyHitByPlayer then
+                                                        local okOwn, resOwn = pcall(MS.WasRecentlyHitByPlayer, e,
+                                                            cfg.ownershipWindowS or 1.2)
+                                                        pass = okOwn and (resOwn and true or false) or false
+                                                    end
+                                                    if cfg.deathLikeRequireStamp and (not pass) and cfg.logging and cfg.logging.probe then
+                                                        MS.LogProbe(("deathLike blocked (no ownership) name=%s"):format(
+                                                            name))
                                                     end
 
-                                                    -- mark to suppress edge this tick
-                                                    MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
-                                                    MercyStrike._per[e.id]._armedDeathLike = true
+                                                    -- Big-dip extra roll (only for bigDrop without lethalNow)
+                                                    if pass and (cfg.bigDipExtraRollEnabled == true) and bigDrop and (not lethalNow) then
+                                                        local base  = tonumber(cfg.bigDipBaseChance) or 0.33
+                                                        local bonus = tonumber(cfg.bigDipBonusAtCap) or 0.33
+                                                        local cap   = tonumber(cfg.strengthCap) or 20
+                                                        local str   = tonumber(MS.GetPlayerStrength and
+                                                            MS.GetPlayerStrength() or 0) or 0
+                                                        if str < 0 then str = 0 elseif str > cap then str = cap end
+                                                        local pExtra = base + bonus * (str / cap)
+                                                        local pCap   = tonumber(cfg.applyChanceMax) or 1.0
+                                                        if pExtra > pCap then pExtra = pCap end
 
-                                                    -- If we arrived *already* at zero, lift HP a hair so KO can land
-                                                    if atZero and MS and MS.ClampHealthMin then
-                                                        MS.ClampHealthMin(e, (lethalThr * 0.6))         -- e.g., 60% of lethal threshold
-                                                    end
-
-                                                    -- dynamic micro-delay
-                                                    local delay = tonumber(cfg.deathLikeDelayMs) or 120
-                                                    if lethalNow or atZero then
-                                                        delay = math.min(delay, 30)         -- snap-fast at lethal/zero
-                                                    end
-
-                                                    Script.SetTimer(delay, function()
-                                                        local applied = false
-                                                        if MS_Unconscious and MS_Unconscious.Apply then
-                                                            local okA, resA = pcall(MS_Unconscious.Apply, e,
-                                                                cfg.buffId or "unconscious_permanent")
-                                                            applied = okA and resA or false
+                                                        local roll = math.random()
+                                                        if cfg.logging and cfg.logging.probe then
+                                                            MS.LogProbe(("bigDip extra roll name=%s p=%.2f roll=%.2f str=%d/%d")
+                                                                :format(name, pExtra, roll, str, cap))
                                                         end
-                                                        if applied then
+                                                        if roll > pExtra then
+                                                            pass = false
                                                             if cfg.logging and cfg.logging.probe then
-                                                                MS.LogProbe("deathLike KO applied name=" .. name)
+                                                                MS.LogProbe("bigDip extra roll FAIL name=" .. name)
                                                             end
-
-                                                            stat.applied = stat.applied + 1
-                                                            if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
-                                                            MercyStrike._per[e.id]._armedDeathLike = nil
-                                                            armCooldown(e, nowSec())
                                                         end
-                                                    end)
+                                                    end
+
+                                                    if pass then
+                                                        if cfg.deathLikeRequireStamp and cfg.logging and cfg.logging.hitsense then
+                                                            MS.LogProbe("deathLike ownership ✓ name=" .. name)
+                                                        end
+                                                        if cfg.logging and cfg.logging.probe then
+                                                            MS.LogProbe(("deathLike arm name=%s hpPrev=%s hp=%.3f lethalNow=%s bigDrop=%s")
+                                                                :format(name, tostring(hpPrev), hp or -1,
+                                                                    tostring(lethalNow), tostring(bigDrop)))
+                                                        end
+
+                                                        -- suppress edge this tick
+                                                        MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+                                                        MercyStrike._per[e.id]._armedDeathLike = true
+
+                                                        -- rescue on zero so KO can land
+                                                        if atZero and MS and MS.ClampHealthMin then
+                                                            MS.ClampHealthMin(e, (lethalThr * 0.6))
+                                                        end
+
+                                                        -- micro-delay (snap fast on lethal/zero)
+                                                        local delay = tonumber(cfg.deathLikeDelayMs) or 120
+                                                        if lethalNow or atZero then delay = math.min(delay, 30) end
+
+                                                        Script.SetTimer(delay, function()
+                                                            local applied = false
+                                                            if MS_Unconscious and MS_Unconscious.Apply then
+                                                                local okA, resA = pcall(MS_Unconscious.Apply, e,
+                                                                    cfg.buffId or "unconscious_permanent")
+                                                                applied = okA and resA or false
+                                                            end
+                                                            if applied then
+                                                                if cfg.logging and cfg.logging.probe then
+                                                                    MS.LogProbe("deathLike KO applied name=" .. name)
+                                                                end
+                                                                stat.applied = stat.applied + 1
+                                                                if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                                                                MercyStrike._per[e.id]._armedDeathLike = nil
+                                                                armCooldown(e, nowSec())
+                                                            end
+                                                        end)
+                                                    end
                                                 end
                                             end
-                                        end         -- added
+                                        end
                                     end
-
 
                                     local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
                                     if (not (MercyStrike and MercyStrike._per and e and e.id and MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike)) and crossed then
@@ -284,6 +353,13 @@ local function CombatTick()
                                         if cfg.applyChanceMax and chance > cfg.applyChanceMax then
                                             chance = cfg.applyChanceMax
                                         end
+
+                                        -- Boss edge nerf
+                                        if isBoss and cfg.boss and cfg.boss.edgeChanceFactor then
+                                            local f = tonumber(cfg.boss.edgeChanceFactor) or 1.0
+                                            chance = chance * f
+                                        end
+                                        if chance < 0 then chance = 0 elseif chance > 1 then chance = 1 end
 
                                         if cfg.logging and cfg.logging.probe then
                                             MS.LogProbe(("edge name=%s hp=%.3f thr=%.2f ramp=%.2f p=%.2f")
@@ -383,7 +459,6 @@ local function CombatTick()
                                                                     ", p=" .. string.format("%.2f", chance) .. ")")
                                                                 or (" (p=" .. string.format("%.2f", chance) .. " static)")))
 
-                                                        stat.applied = stat.applied + 1
                                                         if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
                                                         armCooldown(e, tnow)
                                                     else
@@ -422,61 +497,100 @@ local function CombatTick()
 end
 
 local function StartCombatPoller()
-    if combatActive then return end
-    combatActive = true
-    local ms = tonumber(MS.config and MS.config.combatPollMs) or 500
-
-    -- log effective chance + warfare level
-    local chance, warfare = MS.GetEffectiveApplyChance()
-    if chance then
-        if MS.config and MS.config.scaleWithWarfare then
-            MS.LogCore(string.format(
-                "combat detected → starting combat poller @%d ms (KO chance=%.1f%%, warfare=%d)",
-                ms, (chance * 100.0), tonumber(warfare or 0)
-            ))
-        else
-            local base = tonumber(MS.config and MS.config.applyBaseChance) or chance
-            MS.LogCore(string.format(
-                "combat detected → starting combat poller @%d ms (KO chance=%.1f%% static; base=%.1f%%)",
-                ms, (chance * 100.0), (base * 100.0)
-            ))
-        end
-    else
-        MS.LogCore("combat detected → starting combat poller @" .. tostring(ms) .. " ms")
+    -- cancel pending end debounce if combat restarted
+    if MercyStrike._combatEndTimer then
+        Script.KillTimer(MercyStrike._combatEndTimer)
+        MercyStrike._combatEndTimer = nil
     end
 
+    if combatActive then return end
+    combatActive  = true
+    local ms      = tonumber(MS.config and MS.config.combatPollMs) or 500
+
+    -- compute once
+    local chance  = select(1, MS.GetEffectiveApplyChance())          -- only the chance
+    local warfare = MS.GetWarfareLevel and MS.GetWarfareLevel() or 0 -- real warfare, even if scaling is off
+
+    -- strength for big-dip logging
+    local str     = tonumber(MS.GetPlayerStrength and MS.GetPlayerStrength() or 0) or 0
+    local base    = tonumber(MS.config and MS.config.bigDipBaseChance) or 0.33
+    local bonus   = tonumber(MS.config and MS.config.bigDipBonusAtCap) or 0.33
+    local cap     = tonumber(MS.config and MS.config.strengthCap) or 20
+    if str < 0 then str = 0 elseif str > cap then str = cap end
+
+    local pExtra = base + bonus * (str / cap)
+    local pCap   = tonumber(MS.config and MS.config.applyChanceMax) or 1.0
+    if pExtra > pCap then pExtra = pCap end
+
+    local leth = tonumber(MS.config and MS.config.deathLikeLethalThr) or 0.05
+    local dMin = tonumber(MS.config and MS.config.deathLikeMinDelta) or 0.30
+    local andM = (MS.config and MS.config.deathLikeModeAND) and "AND" or "OR"
+
+    -- unified core log (always the same shape)
+    if MS.config and MS.config.scaleWithWarfare then
+        MS.LogCore(string.format(
+            "combat detected → starting combat poller @%d ms (KO chance=%.1f%%, warfare=%d, strength=%d, bigDip p=%.1f%%, lethalThr=%.2f, minDelta=%.2f, mode=%s)",
+            ms, (tonumber(chance or 0) * 100.0), tonumber(warfare or 0), str, (pExtra * 100.0), leth, dMin, andM
+        ))
+    else
+        local baseApply = tonumber(MS.config and MS.config.applyBaseChance) or tonumber(chance or 0)
+        MS.LogCore(string.format(
+            "combat detected → starting combat poller @%d ms (KO chance=%.1f%% static; base=%.1f%%, warfare=%d, strength=%d, bigDip p=%.1f%%, lethalThr=%.2f, minDelta=%.2f, mode=%s)",
+            ms, (tonumber(chance or 0) * 100.0), (baseApply * 100.0), tonumber(warfare or 0), str, (pExtra * 100.0), leth,
+            dMin, andM
+        ))
+    end
+
+    -- optional developer snapshot
+    if MS.config and MS.config.logging and MS.config.logging.probe then
+        MS.LogProbe(string.format(
+            "[snapshot] warfare=%d strength=%d bigDip(p=%.2f base=%.2f bonus@cap=%.2f) lethalThr=%.2f minDelta=%.2f mode=%s",
+            tonumber(warfare or 0), str, pExtra, base, bonus, leth, dMin, andM
+        ))
+    end
+
+    if MS.config and MS.config.logging and MS.config.logging.probe then
+        local scanR = (MS.config and MS.config.scanRadiusM) or 12
+        local okList, near = pcall(MS.ScanSoulsInSphere, scanR, 48)
+        if okList and type(near) == "table" then
+            for i = 1, #near do
+                local rec = near[i]
+                local e   = rec and rec.e
+                if e and MS.IsBoss and MS.IsBoss(e) then
+                    local n = (e.GetName and e:GetName()) or e.id
+                    MS.LogProbe("[snapshot] boss detected: " .. tostring(n))
+                end
+            end
+        end
+    end
 
     MS_Poller.StartNamed("combat", ms, CombatTick, true)
 
-    -- Optional: enable HitSense during combat for ownership heuristics
+    -- ensure HitSense poller runs during combat
     if MS_Poller and MS_Poller.StartNamed and HS and HS.Tick then
         local hsMs = tonumber(MS.config and MS.config.hitsenseTickMs) or 200
         MS_Poller.StartNamed("hitsense", hsMs, HS.Tick, true)
     end
 end
 
-
 local function StopCombatPoller()
     if not combatActive then return end
     combatActive = false
-    MS_Poller.StopNamed("combat")
-    MS.LogCore("combat ended → combat poller stopped")
-
     if MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("combat")
         MS_Poller.StopNamed("hitsense")
     end
+    MS.LogCore("combat ended → poller[combat] stopped")
 end
 
 -- ------------------------
 -- World detector (slow) → starts/stops combat poller
 -- ------------------------
-local exitDebounceUntil = 0
 local function WorldTick()
     local inCombat = MS.IsInCombat()
     MS.LogCore("world tick (inCombat=" .. tostring(inCombat) .. ")")
 
     if inCombat then
-        exitDebounceUntil = 0
         if not combatActive then
             StartCombatPoller()
         end
@@ -484,13 +598,17 @@ local function WorldTick()
     end
 
     -- not in combat
-    if combatActive then
-        if exitDebounceUntil == 0 then
-            exitDebounceUntil = nowSec() + 3 -- debounce 3s
-            MS.LogCore("combat maybe ended → debouncing 3s")
-        elseif nowSec() >= exitDebounceUntil then
-            StopCombatPoller()
-        end
+    if combatActive and (not inCombat) and (not MercyStrike._combatEndTimer) then
+        MS.LogCore("combat maybe ended → debouncing 3s")
+        MercyStrike._combatEndTimer = Script.SetTimer(3000, function()
+            MercyStrike._combatEndTimer = nil
+            local still = MS.IsInCombat() -- use the same world detector
+            if not still then
+                StopCombatPoller()
+            else
+                MS.LogCore("combat persisted → keeping poller[combat] running")
+            end
+        end)
     end
 end
 
@@ -504,8 +622,16 @@ function MS.Start()
 end
 
 function MS.Stop()
-    MS_Poller.StopNamed("combat")
-    MS_Poller.StopNamed("world")
+    if MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("hitsense") -- add this
+        MS_Poller.StopNamed("combat")
+        MS_Poller.StopNamed("world")
+    end
+    -- also clear any pending end-debounce
+    if MercyStrike._combatEndTimer then
+        Script.KillTimer(MercyStrike._combatEndTimer)
+        MercyStrike._combatEndTimer = nil
+    end
 end
 
 function MS.Bootstrap()
