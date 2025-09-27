@@ -432,3 +432,37 @@ function MS.GetPlayerStrength()
     local s = p and p.soul
     return MS.GetStrengthLevelFromSoul(s)
 end
+
+function MercyStrike.NameMatches(name, patterns)
+    if type(name) ~= "string" or type(patterns) ~= "table" then return false end
+    local s = string.lower(name)
+    for _, pat in ipairs(patterns) do
+        if type(pat) == "string" and s:find(pat, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+function MercyStrike.IsDog(e)
+    -- class-based
+    local cls = e and (e.class or (e.GetClass and pcall(e.GetClass, e) and e:GetClass())) or nil
+    if type(cls) == "string" then
+        local c = string.lower(cls)
+        if c == "dog" or c == "animal" then return true end
+    end
+    -- soul reports animal?
+    local s = e and e.soul
+    if s and s.IsAnimal then
+        local ok, v = pcall(s.IsAnimal, s)
+        if ok and (v == true or v == 1) then
+            -- Treat engine-animals as "animals"; dogs are a subset; class check above catches dogs
+            -- Some dog archetypes may still report generic "animal" class; keep them filtered
+            return true
+        end
+    end
+    -- common dog flags
+    if e and e.animal == true then return true end
+
+    return false
+end

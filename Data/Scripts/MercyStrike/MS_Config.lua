@@ -5,6 +5,10 @@ local DEFAULT = {
     combatPollMs           = 200,  -- fast inner poller (in combat)
     enabled                = true,
 
+    -- Name-based filters (additional safety)
+    corpseNamePatterns     = { "corpse" },      -- lowercase substrings that mean "always skip"
+    dogNamePatterns        = { "tvez_vorech" }, -- extend if you meet other named dogs
+
     -- Scan
     scanRadiusM            = 10.0,
     maxList                = 48,
@@ -67,6 +71,11 @@ local DEFAULT = {
     -- hard cap (safety; optional)
     applyChanceMax         = 1.00, -- don’t exceed 50% total (tweak if you like)
 
+    -- Edge linger: keep KO eligibility alive briefly after crossing threshold
+    edgeLingerS            = 1.0,  -- seconds to keep trying after first cross
+    -- Rescue-at-zero: allow KO even if HP already hit 0 (clamp first)
+    deathRescueAllow       = true, -- requires deathLikeKO=true
+
     -- boss protection
     boss                   = {
         blockDeathLike   = true,       -- no death-like on bosses
@@ -79,7 +88,7 @@ local DEFAULT = {
     buffId                 = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
     buffDuration           = -1,
 
-    logging                = { core = true, probe = true, apply = true, skip = true, hitsense = true },
+    logging                = { core = true, probe = true, apply = true, skip = false, hitsense = true, filter = true },
 }
 
 -- shallow copy (Lua 5.1)
