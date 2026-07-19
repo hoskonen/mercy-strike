@@ -12,7 +12,12 @@ local DEFAULT = {
     -- Scan
     scanRadiusM            = 10.0,
     maxList                = 48,
-    useAIHostile           = false,
+    useAIHostile           = true,
+
+    -- Conservative polling fallback when KCD exposes no usable hostility API
+    candidateDropMin       = 0.10, -- normalized HP lost in one poll
+    candidateMaxDistanceM  = 4.0,  -- melee-range ownership heuristic
+    candidateWindowS       = 2.0,  -- how long the NPC may pass the hostility gate
 
     -- scan budget
     maxPerTick             = 8,   -- scan at most N NPCs per combat tick

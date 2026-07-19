@@ -33,6 +33,62 @@ local function Result(available, ok, value, unavailableReason)
     return tostring(Bool(value))
 end
 
+local function RawResult(available, ok, value, unavailableReason)
+    if not available then return unavailableReason or "unavailable" end
+    if not ok then return unavailableReason or "error" end
+    return Value(value)
+end
+
+local function HasAIMethod(methodName)
+    local ok, fn = pcall(function()
+        return AI and AI[methodName]
+    end)
+    return ok and type(fn) == "function"
+end
+
+local function CallAI(methodName, ...)
+    local okLookup, fn = pcall(function()
+        return AI and AI[methodName]
+    end)
+    if not okLookup or type(fn) ~= "function" then
+        return false, false, nil, "apiUnavailable"
+    end
+    local ok, value = pcall(fn, ...)
+    if not ok then return true, false, nil, "callError" end
+    return true, true, value, nil
+end
+
+local function CallAIForEntity(methodName, entity)
+    if not (entity and entity.id) then
+        local available = HasAIMethod(methodName)
+        return available, false, nil, "missingEntityId"
+    end
+    return CallAI(methodName, entity.id)
+end
+
+local function CallAIForPair(methodName, first, second)
+    if not (first and first.id and second and second.id) then
+        local available = HasAIMethod(methodName)
+        return available, false, nil, "missingEntityId"
+    end
+    return CallAI(methodName, first.id, second.id)
+end
+
+local function EntityId(value)
+    if value == nil then return nil end
+    local ok, id = pcall(function() return value.id end)
+    if ok and id ~= nil then return id end
+    return nil
+end
+
+local function SameEntity(value, entity)
+    if not (value and entity) then return false end
+    if value == entity then return true end
+    if entity.id ~= nil and value == entity.id then return true end
+    local valueId = EntityId(value)
+    return valueId ~= nil and entity.id ~= nil and valueId == entity.id
+end
+
 local function FactionResult(available, ok, value)
     if not available then return "unavailable" end
     if not ok then return "error" end
@@ -144,6 +200,89 @@ local function Inspect(entity, player, cfg)
         record.factionComparison = "unavailable"
     end
 
+    record.aiHostileAvailable = false
+    record.aiHostileOk = false
+    record.aiHostile = nil
+    record.aiHostileReason = "probeUnavailable"
+    if MS.GetAIHostility then
+        record.aiHostileAvailable, record.aiHostileOk, record.aiHostile,
+            record.aiHostileReason = MS.GetAIHostility(entity, player)
+    end
+
+    record.aiEntityFactionAvailable = false
+    record.aiEntityFactionOk = false
+    record.aiEntityFaction = nil
+    record.aiPlayerFactionAvailable = false
+    record.aiPlayerFactionOk = false
+    record.aiPlayerFaction = nil
+    if MS.GetAIFaction then
+        record.aiEntityFactionAvailable, record.aiEntityFactionOk,
+            record.aiEntityFaction = MS.GetAIFaction(entity)
+        record.aiPlayerFactionAvailable, record.aiPlayerFactionOk,
+            record.aiPlayerFaction = MS.GetAIFaction(player)
+    end
+    if record.aiEntityFactionOk and record.aiPlayerFactionOk and
+            record.aiEntityFaction ~= nil and record.aiPlayerFaction ~= nil then
+        record.aiFactionComparison = (record.aiEntityFaction == record.aiPlayerFaction) and
+            "equal" or "different"
+    else
+        record.aiFactionComparison = "unavailable"
+    end
+
+    record.aiHostileReverseAvailable = false
+    record.aiHostileReverseOk = false
+    record.aiHostileReverse = nil
+    record.aiHostileReverseReason = "probeUnavailable"
+    if MS.GetAIHostility then
+        record.aiHostileReverseAvailable, record.aiHostileReverseOk,
+            record.aiHostileReverse, record.aiHostileReverseReason =
+            MS.GetAIHostility(player, entity)
+    end
+
+    record.aiPersonalHostileAvailable, record.aiPersonalHostileOk,
+        record.aiPersonalHostile, record.aiPersonalHostileReason =
+        CallAIForPair("IsPersonallyHostile", entity, player)
+
+    record.attentionEntityAvailable, record.attentionEntityOk,
+        record.attentionEntity, record.attentionEntityReason =
+        CallAIForEntity("GetAttentionTargetEntity", entity)
+    record.attentionEntityId = EntityId(record.attentionEntity)
+    record.attentionEntityMatchesPlayer = record.attentionEntityOk and
+        SameEntity(record.attentionEntity, player) or false
+
+    record.attentionNameAvailable, record.attentionNameOk,
+        record.attentionName, record.attentionNameReason =
+        CallAIForEntity("GetAttentionTargetOf", entity)
+    local playerName = nil
+    if MS.PrettyName then
+        local ok, value = pcall(MS.PrettyName, player)
+        if ok and value then playerName = tostring(value) end
+    end
+    record.attentionNameMatchesPlayer = record.attentionNameOk and
+        playerName ~= nil and record.attentionName ~= nil and
+        string.lower(tostring(record.attentionName)) == string.lower(playerName) or false
+
+    record.attentionTypeAvailable, record.attentionTypeOk,
+        record.attentionType, record.attentionTypeReason =
+        CallAIForEntity("GetAttentionTargetType", entity)
+    record.attentionThreatAvailable, record.attentionThreatOk,
+        record.attentionThreat, record.attentionThreatReason =
+        CallAIForEntity("GetAttentionTargetThreat", entity)
+
+    local candidateState = MS._per and record.id and MS._per[record.id] or nil
+    record.candidateActive = false
+    if MS.IsRecentCombatCandidate then
+        local ok, value = pcall(MS.IsRecentCombatCandidate, entity)
+        record.candidateActive = ok and value == true or false
+    end
+    record.candidateDrop = candidateState and candidateState.candidateDrop or nil
+    record.candidateDistance = candidateState and candidateState.candidateDistance or nil
+    record.candidateRemaining = nil
+    if record.candidateActive and candidateState and candidateState.candidateUntil then
+        local tnow = (MS.NowTime and MS.NowTime()) or os.clock()
+        record.candidateRemaining = math.max(0, candidateState.candidateUntil - tnow)
+    end
+
     local wuid = nil
     if MS.GetEntityWuid then
         local ok, value = pcall(MS.GetEntityWuid, entity)
@@ -185,7 +324,9 @@ local function Inspect(entity, player, cfg)
         if not ok then
             record.hostilityReason = "classifierError"
         elseif record.finalHostile then
-            if record.factionComparison == "different" then
+            if cfg.useAIHostile and record.aiHostileOk and Bool(record.aiHostile) then
+                record.hostilityReason = "aiHostile"
+            elseif record.factionComparison == "different" then
                 record.hostilityReason = "factionDifferent"
             elseif record.publicEnemyOk and Bool(record.publicEnemy) then
                 record.hostilityReason = "publicEnemy"
@@ -193,6 +334,8 @@ local function Inspect(entity, player, cfg)
                 record.hostilityReason = "recentlyDamagedByPlayer"
             elseif record.combatDangerOk and Bool(record.combatDanger) then
                 record.hostilityReason = "combatDanger"
+            elseif record.candidateActive then
+                record.hostilityReason = "recentCloseHpDrop"
             else
                 record.hostilityReason = "classifierTrue"
             end
@@ -208,12 +351,49 @@ local function FormatRecord(eventName, record)
     local distance = record.distance and string.format("%.2f", record.distance) or "unavailable"
     local publicEnemyResult = record.publicEnemyUnavailableReason or
         Result(record.publicEnemyAvailable, record.publicEnemyOk, record.publicEnemy)
+    local aiHostileResult = record.aiHostileReason ~= nil and
+        (record.aiHostileOk and Result(true, true, record.aiHostile) or record.aiHostileReason) or
+        Result(record.aiHostileAvailable, record.aiHostileOk, record.aiHostile)
+    local reverseResult = RawResult(record.aiHostileReverseAvailable,
+        record.aiHostileReverseOk, record.aiHostileReverse,
+        record.aiHostileReverseReason)
+    local personalResult = RawResult(record.aiPersonalHostileAvailable,
+        record.aiPersonalHostileOk, record.aiPersonalHostile,
+        record.aiPersonalHostileReason)
+    local attentionEntityResult = RawResult(record.attentionEntityAvailable,
+        record.attentionEntityOk, record.attentionEntityId or record.attentionEntity,
+        record.attentionEntityReason)
+    local attentionNameResult = RawResult(record.attentionNameAvailable,
+        record.attentionNameOk, record.attentionName, record.attentionNameReason)
+    local attentionTypeResult = RawResult(record.attentionTypeAvailable,
+        record.attentionTypeOk, record.attentionType, record.attentionTypeReason)
+    local attentionThreatResult = RawResult(record.attentionThreatAvailable,
+        record.attentionThreatOk, record.attentionThreat, record.attentionThreatReason)
+    local candidateDrop = record.candidateDrop and string.format("%.4f", record.candidateDrop) or "nil"
+    local candidateDistance = record.candidateDistance and
+        string.format("%.2f", record.candidateDistance) or "nil"
+    local candidateRemaining = record.candidateRemaining and
+        string.format("%.2f", record.candidateRemaining) or "nil"
     return string.format(
-        "entity event=%s id=%s name=%s distM=%s hp=%s entityFactionAvail=%s entityFaction=%s playerFactionAvail=%s playerFaction=%s factionComparison=%s publicEnemyAvail=%s publicEnemyResult=%s recentDamageAvail=%s recentDamageResult=%s combatDangerAvail=%s combatDangerResult=%s finalHostile=%s reason=%s",
+        "entity event=%s id=%s name=%s distM=%s hp=%s entityFactionAvail=%s entityFaction=%s playerFactionAvail=%s playerFaction=%s factionComparison=%s aiHostileAvail=%s aiHostileResult=%s aiEntityFactionAvail=%s aiEntityFaction=%s aiPlayerFactionAvail=%s aiPlayerFaction=%s aiFactionComparison=%s aiHostileReverseAvail=%s aiHostileReverseResult=%s aiPersonalHostileAvail=%s aiPersonalHostileResult=%s attentionEntityAvail=%s attentionEntityResult=%s attentionEntityMatchesPlayer=%s attentionNameAvail=%s attentionNameResult=%s attentionNameMatchesPlayer=%s attentionTypeAvail=%s attentionTypeResult=%s attentionThreatAvail=%s attentionThreatResult=%s candidateActive=%s candidateDrop=%s candidateDistM=%s candidateRemainingS=%s publicEnemyAvail=%s publicEnemyResult=%s recentDamageAvail=%s recentDamageResult=%s combatDangerAvail=%s combatDangerResult=%s finalHostile=%s reason=%s",
         tostring(eventName), Value(record.id), tostring(record.name), distance, hp,
         tostring(record.entityFactionAvailable), FactionResult(record.entityFactionAvailable, record.entityFactionOk, record.entityFaction),
         tostring(record.playerFactionAvailable), FactionResult(record.playerFactionAvailable, record.playerFactionOk, record.playerFaction),
-        tostring(record.factionComparison), tostring(record.publicEnemyAvailable), publicEnemyResult,
+        tostring(record.factionComparison), tostring(record.aiHostileAvailable), aiHostileResult,
+        tostring(record.aiEntityFactionAvailable), FactionResult(record.aiEntityFactionAvailable, record.aiEntityFactionOk, record.aiEntityFaction),
+        tostring(record.aiPlayerFactionAvailable), FactionResult(record.aiPlayerFactionAvailable, record.aiPlayerFactionOk, record.aiPlayerFaction),
+        tostring(record.aiFactionComparison),
+        tostring(record.aiHostileReverseAvailable), reverseResult,
+        tostring(record.aiPersonalHostileAvailable), personalResult,
+        tostring(record.attentionEntityAvailable), attentionEntityResult,
+        tostring(record.attentionEntityMatchesPlayer),
+        tostring(record.attentionNameAvailable), attentionNameResult,
+        tostring(record.attentionNameMatchesPlayer),
+        tostring(record.attentionTypeAvailable), attentionTypeResult,
+        tostring(record.attentionThreatAvailable), attentionThreatResult,
+        tostring(record.candidateActive), candidateDrop, candidateDistance,
+        candidateRemaining,
+        tostring(record.publicEnemyAvailable), publicEnemyResult,
         tostring(record.recentDamageAvailable), Result(record.recentDamageAvailable, record.recentDamageOk, record.recentDamage),
         tostring(record.combatDangerAvailable), Result(record.combatDangerAvailable, record.combatDangerOk, record.combatDanger),
         tostring(record.finalHostile), tostring(record.hostilityReason))
@@ -222,6 +402,32 @@ end
 local function HpSignature(hp)
     if hp == nil then return "unavailable" end
     return string.format("%.4f", hp)
+end
+
+local function CombatSignalSignature(record)
+    return table.concat({
+        tostring(record.aiHostileReverseAvailable),
+        tostring(record.aiHostileReverseOk),
+        Value(record.aiHostileReverse),
+        tostring(record.aiPersonalHostileAvailable),
+        tostring(record.aiPersonalHostileOk),
+        Value(record.aiPersonalHostile),
+        tostring(record.attentionEntityAvailable),
+        tostring(record.attentionEntityOk),
+        Value(record.attentionEntityId or record.attentionEntity),
+        tostring(record.attentionEntityMatchesPlayer),
+        tostring(record.attentionNameAvailable),
+        tostring(record.attentionNameOk),
+        Value(record.attentionName),
+        tostring(record.attentionNameMatchesPlayer),
+        tostring(record.attentionTypeAvailable),
+        tostring(record.attentionTypeOk),
+        Value(record.attentionType),
+        tostring(record.attentionThreatAvailable),
+        tostring(record.attentionThreatOk),
+        Value(record.attentionThreat),
+        tostring(record.candidateActive),
+    }, "|")
 end
 
 function D.CombatStart()
@@ -243,6 +449,7 @@ function D.Scan(list, cfg)
         if IsHumanCandidate(entity) then
             summary.humans = summary.humans + 1
             local record = Inspect(entity, player, cfg)
+            record.combatSignalSignature = CombatSignalSignature(record)
             if record.finalHostile then summary.hostile = summary.hostile + 1
             else summary.notHostile = summary.notHostile + 1 end
             if record.hp == nil then summary.healthUnavailable = summary.healthUnavailable + 1 end
@@ -253,13 +460,19 @@ function D.Scan(list, cfg)
             if not previous or not previous.present then
                 Log(FormatRecord(previous and "reappearance" or "firstAppearance", record))
             else
-                if HpSignature(previous.hp) ~= HpSignature(record.hp) then
+                local hpChanged = HpSignature(previous.hp) ~= HpSignature(record.hp)
+                local hostilityChanged = previous.finalHostile ~= record.finalHostile
+                if hpChanged then
                     Log(FormatRecord("hpChange", record) .. " previousHp=" .. HpSignature(previous.hp))
                 end
-                if previous.finalHostile ~= record.finalHostile then
+                if hostilityChanged then
                     Log(FormatRecord("hostilityChange", record) ..
                         " previousFinalHostile=" .. tostring(previous.finalHostile) ..
                         " previousReason=" .. tostring(previous.hostilityReason))
+                end
+                if not hpChanged and not hostilityChanged and
+                        previous.combatSignalSignature ~= record.combatSignalSignature then
+                    Log(FormatRecord("combatSignalChange", record))
                 end
             end
             record.present = true

@@ -33,9 +33,39 @@ function MS.IsAnimalByName(e)
 end
 
 -- ✅ Clean hostile check: AI.Hostile first; (optional) law status is commented for now
+function MS.GetAIHostility(e, p)
+    local available = AI and type(AI.Hostile) == "function" or false
+    if not available then return false, false, nil, "apiUnavailable" end
+    if not (e and e.id and p and p.id) then
+        return true, false, nil, "missingEntityId"
+    end
+    local ok, value = pcall(AI.Hostile, e.id, p.id)
+    local reason = nil
+    if not ok then reason = "callError" end
+    return true, ok, value, reason
+end
+
+function MS.GetAIFaction(e)
+    local available = AI and type(AI.GetFactionOf) == "function" or false
+    if not available then return false, false, nil, "apiUnavailable" end
+    if not (e and e.id) then return true, false, nil, "missingEntityId" end
+    local ok, value = pcall(AI.GetFactionOf, e.id)
+    local reason = nil
+    if not ok then reason = "callError" end
+    return true, ok, ok and value or nil, reason
+end
+
 function MS.IsHostileToPlayer(e)
     local p = MS.GetPlayer and MS.GetPlayer()
     if not (e and p) then return false end
+
+    local cfg = MS.config or {}
+    if cfg.useAIHostile and MS.GetAIHostility then
+        local available, ok, value = MS.GetAIHostility(e, p)
+        if available and ok and (value == true or value == 1) then
+            return true
+        end
+    end
 
     local ef, pf = nil, nil
     if e.GetFaction then
@@ -61,6 +91,10 @@ function MS.IsHostileToPlayer(e)
     if s and s.IsInCombatDanger and type(s.IsInCombatDanger) == "function" then
         local ok, v = pcall(s.IsInCombatDanger, s)
         if ok and (v == true or v == 1) then return true end
+    end
+
+    if MS.IsRecentCombatCandidate and MS.IsRecentCombatCandidate(e) then
+        return true
     end
 
     return false
@@ -214,9 +248,10 @@ function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
     local l = c.logging or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s scale=%s base=%.2f max=%.2f combatPollMs=%s | logs core=%s probe=%s apply=%s skip=%s",
+        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s aiHostile=%s scale=%s base=%.2f max=%.2f combatPollMs=%s | logs core=%s probe=%s apply=%s skip=%s",
         tonumber(c.hpThreshold or 0.12),
         tostring(c.onlyHostile),
+        tostring(c.useAIHostile),
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
         tonumber(c.applyChanceMax or 0),
@@ -284,6 +319,19 @@ end
 
 function MercyStrike.NowTime()
     return (System and System.GetCurrTime and System.GetCurrTime()) or os.clock()
+end
+
+function MercyStrike.IsRecentCombatCandidate(e)
+    if not (e and e.id) then return false end
+    local S = MercyStrike._per and MercyStrike._per[e.id]
+    if not (S and S.candidateUntil) then return false end
+    local tnow = nil
+    if MercyStrike.NowTime then
+        local ok, value = pcall(MercyStrike.NowTime)
+        if ok then tnow = tonumber(value) end
+    end
+    if not tnow then tnow = tonumber(os.clock()) or 0 end
+    return tnow <= S.candidateUntil
 end
 
 -- Exported API: returns true iff we believe the *player* landed the recent hit

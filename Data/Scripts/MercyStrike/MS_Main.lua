@@ -33,7 +33,13 @@ local function RunDiagnostic(name, fn, ...)
     end
 end
 
-local function nowSec() return math.floor((os.clock() or 0) + 0.5) end
+local function nowSec()
+    if MS and MS.NowTime then
+        local ok, value = pcall(MS.NowTime)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    return tonumber(os.clock()) or 0
+end
 
 local function cooldownActive(e, tnow)
     if not (e and e.id) then return false end
@@ -158,6 +164,96 @@ local function ReadHpNormalized(e)
         end
     end
     return true, hp, isDead
+end
+
+local function VectorComponent(value, name, index)
+    if not value then return nil end
+    local component = value[name]
+    if component == nil then component = value[index] end
+    return tonumber(component)
+end
+
+local function ReadWorldPos(entity)
+    if not (entity and type(entity.GetWorldPos) == "function") then return nil end
+    local ok, value = pcall(entity.GetWorldPos, entity)
+    if ok and value then return value end
+    local out = { x = 0, y = 0, z = 0 }
+    ok = pcall(entity.GetWorldPos, entity, out)
+    if ok then return out end
+    return nil
+end
+
+local function DistanceMeters(a, b)
+    local p, q = ReadWorldPos(a), ReadWorldPos(b)
+    if not (p and q) then return nil end
+    local px, py, pz = VectorComponent(p, "x", 1), VectorComponent(p, "y", 2), VectorComponent(p, "z", 3)
+    local qx, qy, qz = VectorComponent(q, "x", 1), VectorComponent(q, "y", 2), VectorComponent(q, "z", 3)
+    if not (px and py and pz and qx and qy and qz) then return nil end
+    local dx, dy, dz = px - qx, py - qy, pz - qz
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function ObserveCombatCandidates(list, cfg)
+    if type(list) ~= "table" then return end
+    local okPlayer, player = false, nil
+    if MS.GetPlayer then okPlayer, player = pcall(MS.GetPlayer) end
+    if not okPlayer then player = nil end
+    if not player then return end
+    local session = MS._candidateSession or 0
+    local tnow = nowSec()
+    local minDrop = tonumber(cfg.candidateDropMin) or 0.10
+    local maxDistance = tonumber(cfg.candidateMaxDistanceM) or 4.0
+    local window = tonumber(cfg.candidateWindowS) or 2.0
+
+    for i = 1, #list do
+        local entity = list[i] and list[i].e
+        if entity and entity.id then
+            local name = PrettyName(entity)
+            local excluded = IsCorpseByApiOrName(entity, name, cfg) or
+                IsDogByApiOrName(entity, name, cfg) or IsAnimal(entity, cfg)
+            if not excluded then
+                local S = EnsurePer(entity)
+                if S.candidateSession ~= session then
+                    S.candidateSession = session
+                    S.discoveryHpPrev = nil
+                    S.candidatePending = nil
+                    S.candidateHpPrev = nil
+                    S.candidateUntil = nil
+                    S.pendingEdgeHpPrev = nil
+                    S.pendingEdgeHp = nil
+                end
+
+                local okHP, hp = ReadHpNormalized(entity)
+                if okHP and hp ~= nil then
+                    local hpPrev = S.discoveryHpPrev
+                    S.discoveryHpPrev = hp
+                    if hpPrev ~= nil and hp < hpPrev then
+                        local drop = hpPrev - hp
+                        if drop >= minDrop then
+                            local distance = DistanceMeters(player, entity)
+                            if distance and distance <= maxDistance then
+                                if not S.candidatePending or not S.candidateHpPrev or
+                                        hpPrev > S.candidateHpPrev then
+                                    S.candidateHpPrev = hpPrev
+                                end
+                                S.candidateHpNow = hp
+                                S.candidatePending = true
+                                S.candidateUntil = tnow + window
+                                S.candidateDrop = drop
+                                S.candidateDistance = distance
+                                if MS.RecordHit and player.id then
+                                    pcall(MS.RecordHit, entity.id, player.id)
+                                end
+                                MS.LogCore(string.format(
+                                    "[Candidate] stamp id=%s name=%s hpPrev=%.4f hp=%.4f drop=%.4f distM=%.2f windowS=%.2f",
+                                    tostring(entity.id), name, hpPrev, hp, drop, distance, window))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
 end
 
 local function TrackHpAndMaybeStamp(e, S, hp, cfg, player)
@@ -455,6 +551,9 @@ local function CombatTick()
     MS._tickIndex = (MS._tickIndex or 0) + 1
     local cfg = MS.config or {}
     local listOk, list = pcall(MS.ScanSoulsInSphere, cfg.scanRadiusM or 10.0, cfg.maxList or 48)
+    if listOk and type(list) == "table" then
+        ObserveCombatCandidates(list, cfg)
+    end
     if MS.Diagnostics and MS.Diagnostics.Scan then
         RunDiagnostic("scan", MS.Diagnostics.Scan,
             (listOk and type(list) == "table") and list or {}, cfg)
@@ -525,7 +624,20 @@ local function CombatTick()
             if cfg.logging and cfg.logging.core then MS.LogCore("ERR: step=GetNormalizedHp name=" .. name) end
             return
         end
-        local hpPrev = TrackHpAndMaybeStamp(e, S, hp, cfg, player)
+        local trackedPrev = TrackHpAndMaybeStamp(e, S, hp, cfg, player)
+        local threshold = tonumber(cfg.hpThreshold) or 0.12
+        if trackedPrev ~= nil and trackedPrev > threshold and hp <= threshold then
+            S.pendingEdgeHpPrev = trackedPrev
+            S.pendingEdgeHp = hp
+        end
+
+        local hpPrev = trackedPrev
+        if S.candidatePending and S.candidateHpPrev ~= nil then
+            hpPrev = S.candidateHpPrev
+        end
+        if S.pendingEdgeHpPrev ~= nil then
+            hpPrev = S.pendingEdgeHpPrev
+        end
 
         -- 7) cooldown throttles HEAVY work only
         if cooldownActive(e, tnow) then return end
@@ -533,6 +645,12 @@ local function CombatTick()
         -- 8) HEAVY WORK
         seen = seen + 1
         stat.scanned = stat.scanned + 1
+
+        -- Consume the durable edge only when heavy processing actually runs.
+        S.candidatePending = nil
+        S.candidateHpPrev = nil
+        S.pendingEdgeHpPrev = nil
+        S.pendingEdgeHp = nil
 
         local isBoss = MS.IsBoss and MS.IsBoss(e) or false
 
@@ -569,6 +687,7 @@ local function StartCombatPoller()
 
     if combatActive then return end
     combatActive  = true
+    MS._candidateSession = (MS._candidateSession or 0) + 1
     local ms      = tonumber(MS.config and MS.config.combatPollMs) or 500
 
     if MS.Diagnostics and MS.Diagnostics.CombatStart then
