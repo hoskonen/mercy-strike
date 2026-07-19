@@ -11,6 +11,7 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Util.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Unconscious.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Poller.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_HitSense.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_Diagnostics.lua")
 
 -- ------------------------
 -- State
@@ -18,6 +19,19 @@ Script.ReloadScript("Scripts/MercyStrike/MS_HitSense.lua")
 local combatActive = false
 local rescanUntil = {} -- ent.id -> time (sec) before reconsidering
 MercyStrike._combatEndTimer = MercyStrike._combatEndTimer or nil
+local lastDiagnosticError = nil
+
+local function RunDiagnostic(name, fn, ...)
+    if type(fn) ~= "function" then return end
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        local message = tostring(name) .. ": " .. tostring(err)
+        if lastDiagnosticError ~= message then
+            lastDiagnosticError = message
+            MS.LogCore("[Diag] error " .. message)
+        end
+    end
+end
 
 local function nowSec() return math.floor((os.clock() or 0) + 0.5) end
 
@@ -367,18 +381,7 @@ local function EdgeKO(e, name, S, hpPrev, hp, cfg, isBoss, stat)
         end
     elseif cfg.logging and cfg.logging.skip then
         -- No edge this tick
-        if (hp or 1) > thr then
-            -- still above threshold, just informational
-            MS.LogSkip("hpAboveThreshold name=" ..
-                name .. " hp=" .. string.format("%.3f", hp or -1))
-        else
-            local prevStr = (hpPrev ~= nil) and string.format("%.3f", hpPrev) or
-                "nil"
-            MS.LogSkip("belowThresholdNoEdge name=" .. name ..
-                " hpPrev=" .. prevStr ..
-                " hp=" .. string.format("%.3f", hp or -1) ..
-                " thr=" .. tostring(thr))
-
+        if (hp or 1) <= thr then
             -- One-time grace roll on first sighting under threshold (no ownership gating)
             if hpPrev == nil then
                 local baseChance, warfare = MS.GetEffectiveApplyChance()
@@ -452,6 +455,10 @@ local function CombatTick()
     MS._tickIndex = (MS._tickIndex or 0) + 1
     local cfg = MS.config or {}
     local listOk, list = pcall(MS.ScanSoulsInSphere, cfg.scanRadiusM or 10.0, cfg.maxList or 48)
+    if MS.Diagnostics and MS.Diagnostics.Scan then
+        RunDiagnostic("scan", MS.Diagnostics.Scan,
+            (listOk and type(list) == "table") and list or {}, cfg)
+    end
     if not listOk or type(list) ~= "table" or #list == 0 then return end
     local maxN = tonumber(cfg.maxPerTick) or 8
     local seen = 0
@@ -480,28 +487,24 @@ local function CombatTick()
         -- 1) corpse gate
         if IsCorpseByApiOrName(e, name, cfg) then
             stat.filtered = stat.filtered + 1
-            if cfg.logging and (cfg.logging.skip or cfg.logging.filters) then MS.LogSkip("corpse name=" .. name) end
             return
         end
 
         -- 2) dog gate
         if IsDogByApiOrName(e, name, cfg) then
             stat.filtered = stat.filtered + 1
-            if cfg.logging and (cfg.logging.skip or cfg.logging.filters) then MS.LogSkip("dog name=" .. name) end
             return
         end
 
         -- 3) animal gate
         if IsAnimal(e, cfg) then
             stat.filtered = stat.filtered + 1
-            if cfg.logging and (cfg.logging.skip or cfg.logging.filters) then MS.LogSkip("animal name=" .. name) end
             return
         end
 
         -- 4) hostile gate
         if not IsHostile(e, cfg, name) then
             stat.filtered = stat.filtered + 1
-            if cfg.logging and (cfg.logging.skip or cfg.logging.filters) then MS.LogSkip("notHostile name=" .. name) end
             return
         end
 
@@ -531,10 +534,6 @@ local function CombatTick()
         seen = seen + 1
         stat.scanned = stat.scanned + 1
 
-        if MS.LogProbe and cfg.logging and cfg.logging.probe then
-            MS.LogProbe(string.format("name=%s hp=%.3f", name, hp or -1))
-        end
-
         local isBoss = MS.IsBoss and MS.IsBoss(e) or false
 
         -- KO blocks (your existing bodies inside these helpers)
@@ -554,7 +553,7 @@ local function CombatTick()
 
     local dbg = MS.config and MS.config.logging
     local wantZeros = dbg and (dbg.scanZeros == true)
-    local anyWork = (stat.scanned > 0) or (stat.edges > 0) or (stat.rolled > 0) or (stat.applied > 0)
+    local anyWork = (stat.edges > 0) or (stat.rolled > 0) or (stat.applied > 0)
     if wantZeros or anyWork then
         MS.LogCore(string.format("[KO] scan ▸ scanned=%d filtered=%d edges=%d yours=%d rolled=%d applied=%d",
             stat.scanned, stat.filtered, stat.edges, stat.yours, stat.rolled, stat.applied))
@@ -571,6 +570,10 @@ local function StartCombatPoller()
     if combatActive then return end
     combatActive  = true
     local ms      = tonumber(MS.config and MS.config.combatPollMs) or 500
+
+    if MS.Diagnostics and MS.Diagnostics.CombatStart then
+        RunDiagnostic("combatStart", MS.Diagnostics.CombatStart)
+    end
 
     -- compute once
     local chance  = select(1, MS.GetEffectiveApplyChance())          -- only the chance
@@ -633,9 +636,20 @@ local function StartCombatPoller()
     MS_Poller.StartNamed("combat", ms, CombatTick, true)
 
     -- ensure HitSense poller runs during combat
+    if MS.HitSense and MS.HitSense.LifecycleRequested then
+        RunDiagnostic("hitSenseRequested", MS.HitSense.LifecycleRequested,
+            "StartCombatPoller globalHS=" .. tostring(type(rawget(_G, "HS"))))
+    end
     if MS_Poller and MS_Poller.StartNamed and HS and HS.Tick then
         local hsMs = tonumber(MS.config and MS.config.hitsenseTickMs) or 200
         MS_Poller.StartNamed("hitsense", hsMs, HS.Tick, true)
+        if MS.HitSense and MS.HitSense.LifecycleStarted then
+            RunDiagnostic("hitSenseStarted", MS.HitSense.LifecycleStarted,
+                "StartCombatPoller", hsMs)
+        end
+    elseif MS.HitSense and MS.HitSense.LifecycleStartUnavailable then
+        RunDiagnostic("hitSenseStartUnavailable", MS.HitSense.LifecycleStartUnavailable,
+            "existing startup condition was false")
     end
 end
 
@@ -645,6 +659,13 @@ local function StopCombatPoller()
     if MS_Poller and MS_Poller.StopNamed then
         MS_Poller.StopNamed("combat")
         MS_Poller.StopNamed("hitsense")
+    end
+    if MS.HitSense and MS.HitSense.LifecycleStopped then
+        RunDiagnostic("hitSenseStopped", MS.HitSense.LifecycleStopped,
+            "StopCombatPoller")
+    end
+    if MS.Diagnostics and MS.Diagnostics.CombatEnd then
+        RunDiagnostic("combatEnd", MS.Diagnostics.CombatEnd)
     end
     MS.LogCore("combat ended → poller[combat] stopped")
 end
@@ -692,6 +713,12 @@ function MS.Stop()
         MS_Poller.StopNamed("hitsense") -- add this
         MS_Poller.StopNamed("combat")
         MS_Poller.StopNamed("world")
+    end
+    if MS.HitSense and MS.HitSense.LifecycleStopped then
+        RunDiagnostic("hitSenseStopped", MS.HitSense.LifecycleStopped, "MS.Stop")
+    end
+    if MS.Diagnostics and MS.Diagnostics.CombatEnd then
+        RunDiagnostic("combatEnd", MS.Diagnostics.CombatEnd)
     end
     -- also clear any pending end-debounce
     if MercyStrike._combatEndTimer then

@@ -10,6 +10,41 @@ local RADIUS_M = (MercyStrike and MercyStrike.config and MercyStrike.config.hits
 MS.HitSense = MS.HitSense or {}
 local HS    = MS.HitSense
 
+local function lifecycleLog(message)
+    if MS and MS.LogCore then
+        MS.LogCore("[HitSense/lifecycle] " .. tostring(message))
+    elseif System and System.LogAlways then
+        System.LogAlways("[MercyStrike/HitSense/lifecycle] " .. tostring(message))
+    end
+end
+
+function HS.LifecycleRequested(source)
+    HS._lifecycleRequested = true
+    HS._lifecycleStarted = false
+    HS._lifecycleTickObserved = false
+    lifecycleLog("requested source=" .. tostring(source or "unknown"))
+end
+
+function HS.LifecycleStarted(source, intervalMs)
+    HS._lifecycleStarted = true
+    lifecycleLog("started source=" .. tostring(source or "unknown") ..
+        " intervalMs=" .. tostring(intervalMs or TICK_MS))
+end
+
+function HS.LifecycleStartUnavailable(reason)
+    lifecycleLog("started=false reason=" .. tostring(reason or "unknown"))
+end
+
+function HS.LifecycleStopped(source)
+    if not HS._lifecycleRequested and not HS._lifecycleStarted then return end
+    lifecycleLog("stopped source=" .. tostring(source or "unknown") ..
+        " started=" .. tostring(HS._lifecycleStarted == true) ..
+        " tickObserved=" .. tostring(HS._lifecycleTickObserved == true))
+    HS._lifecycleRequested = false
+    HS._lifecycleStarted = false
+    HS._lifecycleTickObserved = false
+end
+
 local function now()
     return (MS.NowTime and MS.NowTime()) or os.clock()
 end
@@ -20,6 +55,7 @@ function HS.Stop()
         MS_Poller.StopNamed("hitsense")
     end
     HS._running = false
+    HS.LifecycleStopped("HS.Stop")
 end
 
 -- helper: squared distance ≤ R^2
@@ -69,17 +105,25 @@ end
 function HS.Start()
     -- no-op if already running
     if HS._running then return end
+    HS.LifecycleRequested("HS.Start")
     -- Use NAMED start + direct function reference (no closures)
     if MS_Poller and MS_Poller.StartNamed then
         MS_Poller.StartNamed("hitsense", TICK_MS, HS.Tick) -- don't pass runImmediately; default is fine
         HS._running = true
+        HS.LifecycleStarted("HS.Start", TICK_MS)
         if MS.config and MS.config.logging and MS.config.logging.core then
             MS.LogCore("HitSense started @" .. tostring(TICK_MS) .. " ms")
         end
+    else
+        HS.LifecycleStartUnavailable("MS_Poller.StartNamed unavailable")
     end
 end
 
 function HS.Tick()
+    if not HS._lifecycleTickObserved then
+        HS._lifecycleTickObserved = true
+        lifecycleLog("tick observed")
+    end
     local stampedThisTick = 0
     if not MS or not MS.GetPlayer then return end
     local player = MS.GetPlayer(); if not player then return end
@@ -109,7 +153,7 @@ function HS.Tick()
         end
     end
 
-    if MS.config and MS.config.logging and MS.config.logging.hitsense then
+    if stampedThisTick > 0 and MS.config and MS.config.logging and MS.config.logging.hitsense then
         MS.LogProbe(string.format("[HitSense] tick stamped=%d", stampedThisTick))
     end
 end

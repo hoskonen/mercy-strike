@@ -88,7 +88,7 @@ local DEFAULT = {
     buffId                 = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
     buffDuration           = -1,
 
-    logging                = { core = true, probe = true, apply = true, skip = false, hitsense = true, filter = true },
+    logging                = { core = true, probe = true, apply = true, skip = true, hitsense = true, filter = true },
 }
 
 -- shallow copy (Lua 5.1)
