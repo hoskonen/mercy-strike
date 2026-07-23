@@ -1,6 +1,7 @@
 -- Scripts/MercyStrike/MS_Unconscious.lua  (Lua 5.1)
 
 MS_Unconscious = MS_Unconscious or {}
+local MS = MercyStrike
 
 function MS_Unconscious.Apply(e, buffId)
     if not (e and buffId) then return false end
@@ -8,7 +9,14 @@ function MS_Unconscious.Apply(e, buffId)
     if not (soul and soul.AddBuff) then return false end
 
     local ok, res = pcall(soul.AddBuff, soul, buffId)
-    local applied = ok and (res ~= nil)
+    -- KCD2 may return nil even when AddBuff succeeds; pcall is the only
+    -- consistently observable result (matching Cura Equi's proven usage).
+    local applied = ok
+
+    if MS and MS.LogCore then
+        MS.LogCore(string.format("[Unconscious] AddBuff id=%s ok=%s result=%s",
+            tostring(buffId), tostring(ok), tostring(res)))
+    end
 
     if applied then
         MercyStrike._per = MercyStrike._per or {}

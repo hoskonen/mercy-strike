@@ -28,7 +28,7 @@ end
 function MS.IsAnimalByName(e)
     local nm = "<entity>"; if e and e.GetName then pcall(function() nm = e:GetName() end) end
     local s = string.lower(tostring(nm or ""))
-    return (s:find("dog", 1, true) or s:find("boar", 1, true) or s:find("deer", 1, true) or s:find("rabbit", 1, true) or s:find("wolf", 1, true)) and
+    return (s:find("spawnedanimal_", 1, true) or s:find("dog", 1, true) or s:find("boar", 1, true) or s:find("deer", 1, true) or s:find("hare", 1, true) or s:find("rabbit", 1, true) or s:find("wolf", 1, true)) and
         true or false
 end
 
@@ -324,6 +324,7 @@ end
 function MercyStrike.IsRecentCombatCandidate(e)
     if not (e and e.id) then return false end
     local S = MercyStrike._per and MercyStrike._per[e.id]
+    if S and S.immortalityProbeApplied then return true end
     if not (S and S.candidateUntil) then return false end
     local tnow = nil
     if MercyStrike.NowTime then

@@ -19,6 +19,26 @@ local DEFAULT = {
     candidateMaxDistanceM  = 4.0,  -- melee-range ownership heuristic
     candidateWindowS       = 2.0,  -- how long the NPC may pass the hostility gate
 
+    -- Feasibility probe: pre-arm confirmed combat candidates before lethal damage.
+    immortalityProbeEnabled = true,
+    immortalityProbeBuffId  = "d4e80237-d7b6-498d-8e28-fdf2e31f3166",
+    immortalityProbeRetainAfterKO = true,
+    immortalityProbeRetainNaturalDown = true,
+    immortalityProbeRetainAllCandidates = true,
+    immortalityProbeCleanupOnCorpse = false,
+    immortalityProbeKODelayMs = 450,
+    immortalityProbeObserveNaturalFall = true,
+    immortalityProbeTransitionPollMs = 100,
+    immortalityProbeTransitionWatchTimeoutS = 20,
+    immortalityProbeEngineDownSettleMs = 1500,
+    immortalityProbeReleaseAfterKO = true,
+    immortalityProbeReleaseAfterKODelayMs = 1500,
+    immortalityProbeReleaseAfterNaturalDown = true,
+    immortalityProbeReleaseDelayMs = 1000,
+    naturalDownResetFromMax = 0.50,
+    naturalDownResetToMin   = 0.90,
+    naturalDownResetRiseMin = 0.50,
+
     -- scan budget
     maxPerTick             = 8,   -- scan at most N NPCs per combat tick
     rescanCooldownS        = 0.5, -- don't re-check the same NPC again for this many seconds
@@ -93,6 +113,12 @@ local DEFAULT = {
     buffId                 = "c75aa0db-65ca-44d7-9001-e4b6d38c6875",
     buffDuration           = -1,
 
+    -- Compact diagnostics: core experiment transitions remain logged.
+    diagnostics            = {
+        entityDetails = false,
+        scanSummaries = false,
+        worldTicks = false,
+    },
     logging                = { core = true, probe = true, apply = true, skip = true, hitsense = true, filter = true },
 }
 

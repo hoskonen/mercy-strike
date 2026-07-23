@@ -166,6 +166,54 @@ local function ReadHpNormalized(e)
     return true, hp, isDead
 end
 
+local function CallObjectMethod(object, methodName)
+    local okLookup, method = pcall(function()
+        return object and object[methodName]
+    end)
+    if not okLookup or type(method) ~= "function" then
+        return false, false, nil
+    end
+    local ok, result = pcall(method, object)
+    return true, ok, ok and result or nil
+end
+
+local function ReadFinisherState(entity)
+    local okTargetActor, targetActor = pcall(function()
+        return entity and entity.actor
+    end)
+    if not okTargetActor then targetActor = nil end
+
+    local player = MS.GetPlayer and MS.GetPlayer() or nil
+    local okPlayerActor, playerActor = pcall(function()
+        return player and player.actor
+    end)
+    if not okPlayerActor then playerActor = nil end
+
+    local unconsciousAvailable, unconsciousOk, unconscious =
+        CallObjectMethod(targetActor, "IsUnconscious")
+    local mercyAvailable, mercyOk, canMercy =
+        CallObjectMethod(playerActor, "CanDoMercyKill")
+    return {
+        unconsciousAvailable = unconsciousAvailable,
+        unconsciousOk = unconsciousOk,
+        unconscious = unconscious,
+        mercyAvailable = mercyAvailable,
+        mercyOk = mercyOk,
+        canMercy = canMercy,
+    }
+end
+
+local function FinisherStateSignature(state)
+    return table.concat({
+        tostring(state and state.unconsciousAvailable),
+        tostring(state and state.unconsciousOk),
+        tostring(state and state.unconscious),
+        tostring(state and state.mercyAvailable),
+        tostring(state and state.mercyOk),
+        tostring(state and state.canMercy),
+    }, "|")
+end
+
 local function VectorComponent(value, name, index)
     if not value then return nil end
     local component = value[name]
@@ -193,6 +241,353 @@ local function DistanceMeters(a, b)
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+local function DeathRescueAllowed(entity, cfg)
+    if not (cfg and cfg.deathRescueAllow == true and cfg.deathLikeKO == true) then
+        return false
+    end
+    if cfg.boss and cfg.boss.blockDeathLike and MS.IsBoss then
+        local okBoss, isBoss = pcall(MS.IsBoss, entity)
+        if okBoss and isBoss then return false end
+    end
+    return true
+end
+
+local function ApplyImmortalityProbe(entity, S, cfg, name)
+    if not (cfg and cfg.immortalityProbeEnabled == true) then return false end
+    if not (entity and entity.soul and S) then return false end
+    if cfg.boss and cfg.boss.blockDeathLike and MS.IsBoss then
+        local okBoss, isBoss = pcall(MS.IsBoss, entity)
+        if okBoss and isBoss then return false end
+    end
+    if S.immortalityProbeApplied or S.immortalityProbeAttempted then
+        return S.immortalityProbeApplied == true
+    end
+
+    local guid = tostring(cfg.immortalityProbeBuffId or "")
+    local add = entity.soul.AddBuff
+    S.immortalityProbeAttempted = true
+    if guid == "" or type(add) ~= "function" then
+        MS.LogCore(string.format(
+            "[ImmortalityProbe] add name=%s id=%s available=%s ok=false result=unavailable",
+            name, tostring(entity.id), tostring(type(add) == "function")))
+        return false
+    end
+
+    local ok, result = pcall(add, entity.soul, guid)
+    S.immortalityProbeApplied = ok and true or false
+    if ok then S.immortalityProbeEntity = entity end
+    MS.LogCore(string.format(
+        "[ImmortalityProbe] add name=%s id=%s buff=%s available=true ok=%s result=%s",
+        name, tostring(entity.id), guid, tostring(ok), tostring(result)))
+    return S.immortalityProbeApplied
+end
+
+local function RemoveImmortalityProbe(entity, S, cfg, name, reason)
+    if not (S and (S.immortalityProbeApplied or S.immortalityProbeAttempted)) then
+        return false
+    end
+    entity = entity or S.immortalityProbeEntity
+    local soul = entity and entity.soul
+    local remove = soul and soul.RemoveAllBuffsByGuid
+    local guid = tostring((cfg and cfg.immortalityProbeBuffId) or "")
+    local available = type(remove) == "function" and guid ~= ""
+    local ok = false
+    if available then ok = pcall(remove, soul, guid) end
+    MS.LogCore(string.format(
+        "[ImmortalityProbe] remove name=%s id=%s buff=%s reason=%s available=%s ok=%s",
+        tostring(name or "<entity>"), tostring(entity and entity.id), guid,
+        tostring(reason), tostring(available), tostring(ok)))
+    S.immortalityProbeApplied = nil
+    S.immortalityProbeAttempted = nil
+    S.immortalityProbeEntity = nil
+    S.immortalityNaturalDowned = nil
+    S.immortalityNaturalDownedAt = nil
+    S.immortalityProbeMonitorSeen = nil
+    S.immortalityProbeMonitorHp = nil
+    S.immortalityProbeMonitorDead = nil
+    S.immortalityProbeMonitorCorpse = nil
+    S.immortalityProbeFinisherSignature = nil
+    S.immortalityProbeKOReadyAt = nil
+    S.immortalityProbeKOScheduledHp = nil
+    S.immortalityProbeReleaseScheduled = nil
+    S.immortalityTransitionWatching = nil
+    S.immortalityTransitionEntity = nil
+    S.immortalityTransitionName = nil
+    S.immortalityTransitionStartedAt = nil
+    S.immortalityTransitionHpPrev = nil
+    return ok
+end
+
+local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger)
+    trigger = tostring(trigger or "naturalDown")
+    local enabled = cfg and cfg.immortalityProbeReleaseAfterNaturalDown == true
+    local delay = tonumber(cfg and cfg.immortalityProbeReleaseDelayMs) or 1000
+    if trigger == "confirmedKO" then
+        enabled = cfg and cfg.immortalityProbeReleaseAfterKO == true
+        delay = tonumber(cfg and cfg.immortalityProbeReleaseAfterKODelayMs) or 1500
+    elseif trigger == "engineDown" then
+        delay = tonumber(cfg and cfg.immortalityProbeEngineDownSettleMs) or 1500
+    end
+    if not enabled then return end
+    if not (entity and S and S.immortalityProbeApplied) then return end
+    if S.immortalityProbeReleaseScheduled or
+            S.immortalityProbeReleasedForFinisher then
+        return
+    end
+    if not (Script and type(Script.SetTimer) == "function") then
+        MS.LogCore("[ImmortalityProbe] release unavailable name=" ..
+            tostring(name) .. " reason=Script.SetTimer")
+        return
+    end
+
+    if delay < 0 then delay = 0 end
+    S.immortalityProbeReleaseScheduled = true
+    MS.LogCore(string.format(
+        "[ImmortalityProbe] release scheduled name=%s id=%s trigger=%s delayMs=%d koApplied=%s",
+        tostring(name), tostring(entity.id), trigger, delay,
+        tostring(S.koApplied == true)))
+
+    Script.SetTimer(delay, function()
+        S.immortalityProbeReleaseScheduled = nil
+        if not S.immortalityProbeApplied then
+            MS.LogCore("[ImmortalityProbe] release skipped name=" ..
+                tostring(name) .. " reason=probeNoLongerActive")
+            return
+        end
+
+        local okBefore, hpBefore, deadBefore = ReadHpNormalized(entity)
+        local corpseBefore = IsCorpseByApiOrName(entity, name, cfg)
+        local unconsciousReady = S.koApplied == true
+        local unconsciousAdded = false
+        if not unconsciousReady and MS_Unconscious and MS_Unconscious.Apply then
+            local okApply, result = pcall(MS_Unconscious.Apply, entity,
+                cfg.buffId or "unconscious_permanent")
+            unconsciousAdded = okApply and result or false
+            unconsciousReady = unconsciousAdded
+            if not okApply then
+                MS.LogCore("ERR: step=ImmortalityProbe.Release.Unconscious.Apply name=" ..
+                    tostring(name))
+            end
+        end
+
+        if not unconsciousReady then
+            MS.LogCore(string.format(
+                "[ImmortalityProbe] release blocked name=%s trigger=%s hp=%s dead=%s corpse=%s reason=unconsciousNotReady stateReadOk=%s",
+                tostring(name), trigger, tostring(hpBefore), tostring(deadBefore),
+                tostring(corpseBefore), tostring(okBefore)))
+            return
+        end
+
+        if MS.ClampHealthPostKO then pcall(MS.ClampHealthPostKO, entity) end
+        local removed = RemoveImmortalityProbe(entity, S, cfg, name,
+            trigger .. "FinisherTest")
+        S.immortalityProbeReleasedForFinisher = removed and true or false
+        S.immortalityProbeReleasedEntity = entity
+        S.immortalityProbeReleasedName = name
+
+        local okAfter, hpAfter, deadAfter = ReadHpNormalized(entity)
+        local corpseAfter = IsCorpseByApiOrName(entity, name, cfg)
+        local finisherAfter = ReadFinisherState(entity)
+        S.immortalityProbeReleasedMonitorSeen = true
+        S.immortalityProbeReleasedMonitorHp = hpAfter
+        S.immortalityProbeReleasedMonitorDead = deadAfter
+        S.immortalityProbeReleasedMonitorCorpse = corpseAfter
+        S.immortalityProbeReleasedFinisherSignature =
+            FinisherStateSignature(finisherAfter)
+        MS.LogCore(string.format(
+            "[ImmortalityProbe] released for finisher test name=%s id=%s trigger=%s removed=%s unconsciousPreexisting=%s unconsciousAdded=%s hpBefore=%s deadBefore=%s corpseBefore=%s hpAfter=%s deadAfter=%s corpseAfter=%s targetIsUnconsciousAvail=%s targetIsUnconsciousOk=%s targetIsUnconscious=%s playerCanMercyAvail=%s playerCanMercyOk=%s playerCanMercy=%s stateReadBeforeOk=%s stateReadAfterOk=%s",
+            tostring(name), tostring(entity.id), trigger, tostring(removed),
+            tostring(S.koApplied == true and not unconsciousAdded),
+            tostring(unconsciousAdded), tostring(hpBefore), tostring(deadBefore),
+            tostring(corpseBefore), tostring(hpAfter), tostring(deadAfter),
+            tostring(corpseAfter),
+            tostring(finisherAfter.unconsciousAvailable),
+            tostring(finisherAfter.unconsciousOk),
+            tostring(finisherAfter.unconscious),
+            tostring(finisherAfter.mercyAvailable),
+            tostring(finisherAfter.mercyOk),
+            tostring(finisherAfter.canMercy),
+            tostring(okBefore), tostring(okAfter)))
+    end)
+end
+
+local function TransitionTick()
+    local cfg = MS.config or {}
+    local timeout = tonumber(cfg.immortalityProbeTransitionWatchTimeoutS) or 20
+    local tnow = nowSec()
+    for _, S in pairs(MercyStrike._per or {}) do
+        if S and S.immortalityTransitionWatching then
+            local entity = S.immortalityTransitionEntity
+            local name = S.immortalityTransitionName or PrettyName(entity)
+            if not (entity and S.immortalityProbeApplied) then
+                S.immortalityTransitionWatching = nil
+            else
+                local okHP, hp, isDead = ReadHpNormalized(entity)
+                local finisher = ReadFinisherState(entity)
+                local engineUnconscious = finisher.unconsciousOk and
+                    (finisher.unconscious == true or finisher.unconscious == 1)
+                local hpPrev = S.immortalityTransitionHpPrev
+                local fromMax = tonumber(cfg.naturalDownResetFromMax) or 0.50
+                local toMin = tonumber(cfg.naturalDownResetToMin) or 0.90
+                local riseMin = tonumber(cfg.naturalDownResetRiseMin) or 0.50
+                local rise = hpPrev ~= nil and hp ~= nil and (hp - hpPrev) or nil
+                local resetObserved = hpPrev ~= nil and hp ~= nil and
+                    hpPrev <= fromMax and hp >= toMin and rise >= riseMin
+
+                if hp ~= nil then S.immortalityTransitionHpPrev = hp end
+                if engineUnconscious or
+                        (not finisher.unconsciousAvailable and resetObserved) then
+                    S.immortalityTransitionWatching = nil
+                    S.immortalityNaturalDowned = true
+                    S.immortalityNaturalDownedAt = tnow
+                    MS.LogCore(string.format(
+                        "[ImmortalityProbe] engine down observed name=%s id=%s hpPrev=%s hp=%s resetObserved=%s targetIsUnconscious=%s dead=%s stateReadOk=%s",
+                        tostring(name), tostring(entity.id), tostring(hpPrev),
+                        tostring(hp), tostring(resetObserved),
+                        tostring(finisher.unconscious), tostring(isDead),
+                        tostring(okHP)))
+                    ScheduleImmortalityProbeRelease(entity, S, cfg, name,
+                        "engineDown")
+                elseif S.immortalityTransitionStartedAt and timeout > 0 and
+                        (tnow - S.immortalityTransitionStartedAt) >= timeout then
+                    S.immortalityTransitionWatching = nil
+                    MS.LogCore(string.format(
+                        "[ImmortalityProbe] natural fall watch timeout name=%s id=%s hp=%s targetIsUnconscious=%s probeRetained=true",
+                        tostring(name), tostring(entity.id), tostring(hp),
+                        tostring(finisher.unconscious)))
+                end
+            end
+        end
+    end
+end
+
+local function EnsureTransitionPoller()
+    if not (MS_Poller and MS_Poller.StartNamed) then return false end
+    if MS_Poller._ids and MS_Poller._ids.transition then return true end
+    local interval = tonumber(MS.config and
+        MS.config.immortalityProbeTransitionPollMs) or 100
+    MS_Poller.StartNamed("transition", interval, TransitionTick, true)
+    return true
+end
+
+local function WatchNaturalFall(entity, S, cfg, name, hp)
+    if not (entity and S and S.immortalityProbeApplied) then return false end
+    if S.immortalityTransitionWatching or S.immortalityNaturalDowned then
+        return true
+    end
+    S.immortalityTransitionWatching = true
+    S.immortalityTransitionEntity = entity
+    S.immortalityTransitionName = name
+    S.immortalityTransitionStartedAt = nowSec()
+    S.immortalityTransitionHpPrev = hp
+    S.immortalityProbeKOReadyAt = nil
+    S.immortalityProbeKOScheduledHp = nil
+    MS.LogCore(string.format(
+        "[ImmortalityProbe] natural fall watch started name=%s id=%s hp=%s timeoutS=%s",
+        tostring(name), tostring(entity.id), tostring(hp),
+        tostring(cfg.immortalityProbeTransitionWatchTimeoutS or 20)))
+    return EnsureTransitionPoller()
+end
+
+function MercyStrike.CleanupImmortalityProbes(reason)
+    local removed = 0
+    for _, S in pairs(MercyStrike._per or {}) do
+        if S and (S.immortalityProbeApplied or S.immortalityProbeAttempted) then
+            local entity = S.immortalityProbeEntity
+            if RemoveImmortalityProbe(entity, S, MS.config or {},
+                    PrettyName(entity), reason or "manualCleanup") then
+                removed = removed + 1
+            end
+        end
+    end
+    MS.LogCore("[ImmortalityProbe] cleanup complete removed=" .. tostring(removed))
+    return removed
+end
+
+local function MonitorRetainedImmortalityProbes()
+    for _, S in pairs(MercyStrike._per or {}) do
+        local retainAll = MS.config and
+            MS.config.immortalityProbeRetainAllCandidates == true
+        local retained = S and (retainAll or S.koApplied or
+            S.immortalityNaturalDowned)
+        if retained and S.immortalityProbeApplied then
+            local entity = S.immortalityProbeEntity
+            local name = PrettyName(entity)
+            local okHP, hp, isDead = ReadHpNormalized(entity)
+            local corpse = IsCorpseByApiOrName(entity, name, MS.config or {})
+            local finisher = ReadFinisherState(entity)
+            local finisherSignature = FinisherStateSignature(finisher)
+            local previousHp = S.immortalityProbeMonitorHp
+            local stateChanged = S.immortalityProbeMonitorDead ~= isDead or
+                S.immortalityProbeMonitorCorpse ~= corpse
+            local hpChanged = hp ~= nil and (previousHp == nil or
+                math.abs(hp - previousHp) >= 0.005 or hp <= 0.01)
+            local finisherChanged =
+                S.immortalityProbeFinisherSignature ~= finisherSignature
+            if stateChanged or hpChanged or finisherChanged or
+                    not S.immortalityProbeMonitorSeen then
+                MS.LogCore(string.format(
+                    "[ImmortalityProbe] retained monitor name=%s id=%s hp=%s dead=%s corpse=%s koApplied=%s naturalDowned=%s targetIsUnconsciousAvail=%s targetIsUnconsciousOk=%s targetIsUnconscious=%s playerCanMercyAvail=%s playerCanMercyOk=%s playerCanMercy=%s stateReadOk=%s",
+                    name, tostring(entity and entity.id), tostring(hp),
+                    tostring(isDead), tostring(corpse), tostring(S.koApplied == true),
+                    tostring(S.immortalityNaturalDowned == true),
+                    tostring(finisher.unconsciousAvailable),
+                    tostring(finisher.unconsciousOk),
+                    tostring(finisher.unconscious),
+                    tostring(finisher.mercyAvailable),
+                    tostring(finisher.mercyOk),
+                    tostring(finisher.canMercy), tostring(okHP)))
+                S.immortalityProbeMonitorSeen = true
+                S.immortalityProbeMonitorHp = hp
+                S.immortalityProbeMonitorDead = isDead
+                S.immortalityProbeMonitorCorpse = corpse
+                S.immortalityProbeFinisherSignature = finisherSignature
+            end
+            if corpse and MS.config and
+                    MS.config.immortalityProbeCleanupOnCorpse == true then
+                RemoveImmortalityProbe(entity, S, MS.config or {}, name,
+                    "retainedMonitorCorpse")
+            end
+        elseif S and S.immortalityProbeReleasedForFinisher and
+                S.immortalityProbeReleasedEntity then
+            local entity = S.immortalityProbeReleasedEntity
+            local name = S.immortalityProbeReleasedName or PrettyName(entity)
+            local okHP, hp, isDead = ReadHpNormalized(entity)
+            local corpse = IsCorpseByApiOrName(entity, name, MS.config or {})
+            local finisher = ReadFinisherState(entity)
+            local finisherSignature = FinisherStateSignature(finisher)
+            local previousHp = S.immortalityProbeReleasedMonitorHp
+            local stateChanged =
+                S.immortalityProbeReleasedMonitorDead ~= isDead or
+                S.immortalityProbeReleasedMonitorCorpse ~= corpse
+            local hpChanged = hp ~= nil and (previousHp == nil or
+                math.abs(hp - previousHp) >= 0.005)
+            local finisherChanged =
+                S.immortalityProbeReleasedFinisherSignature ~= finisherSignature
+            if stateChanged or hpChanged or finisherChanged or
+                    not S.immortalityProbeReleasedMonitorSeen then
+                MS.LogCore(string.format(
+                    "[ImmortalityProbe] released monitor name=%s id=%s hp=%s dead=%s corpse=%s koApplied=%s targetIsUnconsciousAvail=%s targetIsUnconsciousOk=%s targetIsUnconscious=%s playerCanMercyAvail=%s playerCanMercyOk=%s playerCanMercy=%s stateReadOk=%s",
+                    tostring(name), tostring(entity.id), tostring(hp),
+                    tostring(isDead), tostring(corpse),
+                    tostring(S.koApplied == true),
+                    tostring(finisher.unconsciousAvailable),
+                    tostring(finisher.unconsciousOk),
+                    tostring(finisher.unconscious),
+                    tostring(finisher.mercyAvailable),
+                    tostring(finisher.mercyOk),
+                    tostring(finisher.canMercy), tostring(okHP)))
+                S.immortalityProbeReleasedMonitorSeen = true
+                S.immortalityProbeReleasedMonitorHp = hp
+                S.immortalityProbeReleasedMonitorDead = isDead
+                S.immortalityProbeReleasedMonitorCorpse = corpse
+                S.immortalityProbeReleasedFinisherSignature =
+                    finisherSignature
+            end
+        end
+    end
+end
+
 local function ObserveCombatCandidates(list, cfg)
     if type(list) ~= "table" then return end
     local okPlayer, player = false, nil
@@ -209,8 +604,8 @@ local function ObserveCombatCandidates(list, cfg)
         local entity = list[i] and list[i].e
         if entity and entity.id then
             local name = PrettyName(entity)
-            local excluded = IsCorpseByApiOrName(entity, name, cfg) or
-                IsDogByApiOrName(entity, name, cfg) or IsAnimal(entity, cfg)
+            local corpseBefore = IsCorpseByApiOrName(entity, name, cfg)
+            local excluded = IsDogByApiOrName(entity, name, cfg) or IsAnimal(entity, cfg)
             if not excluded then
                 local S = EnsurePer(entity)
                 if S.candidateSession ~= session then
@@ -221,12 +616,37 @@ local function ObserveCombatCandidates(list, cfg)
                     S.candidateUntil = nil
                     S.pendingEdgeHpPrev = nil
                     S.pendingEdgeHp = nil
+                    S.zeroRescuePending = nil
                 end
 
-                local okHP, hp = ReadHpNormalized(entity)
+                -- A live entity may become a corpse before the next 200 ms poll.
+                -- Continue reading only if this session already observed it alive;
+                -- this keeps static corpses from entering candidate logic.
+                local mayBeNewlyDead = S.discoveryHpPrev ~= nil or S.candidatePending == true
+                local okHP, hp = false, nil
+                if (not corpseBefore) or mayBeNewlyDead then
+                    okHP, hp = ReadHpNormalized(entity)
+                end
                 if okHP and hp ~= nil then
                     local hpPrev = S.discoveryHpPrev
                     S.discoveryHpPrev = hp
+                    if S.immortalityProbeApplied and hpPrev ~= nil and
+                            not S.immortalityNaturalDowned and
+                            cfg.immortalityProbeObserveNaturalFall ~= true then
+                        local fromMax = tonumber(cfg.naturalDownResetFromMax) or 0.50
+                        local toMin = tonumber(cfg.naturalDownResetToMin) or 0.90
+                        local riseMin = tonumber(cfg.naturalDownResetRiseMin) or 0.50
+                        local rise = hp - hpPrev
+                        if hpPrev <= fromMax and hp >= toMin and rise >= riseMin then
+                            S.immortalityNaturalDowned = true
+                            S.immortalityNaturalDownedAt = tnow
+                            MS.LogCore(string.format(
+                                "[ImmortalityProbe] natural down detected id=%s name=%s hpPrev=%.4f hp=%.4f rise=%.4f",
+                                tostring(entity.id), name, hpPrev, hp, rise))
+                            ScheduleImmortalityProbeRelease(entity, S, cfg, name,
+                                "naturalDown")
+                        end
+                    end
                     if hpPrev ~= nil and hp < hpPrev then
                         local drop = hpPrev - hp
                         if drop >= minDrop then
@@ -247,6 +667,33 @@ local function ObserveCombatCandidates(list, cfg)
                                 MS.LogCore(string.format(
                                     "[Candidate] stamp id=%s name=%s hpPrev=%.4f hp=%.4f drop=%.4f distM=%.2f windowS=%.2f",
                                     tostring(entity.id), name, hpPrev, hp, drop, distance, window))
+
+                                if hp > 0 and not corpseBefore then
+                                    ApplyImmortalityProbe(entity, S, cfg, name)
+                                end
+
+                                if hp <= 0 and DeathRescueAllowed(entity, cfg) then
+                                    S.zeroRescuePending = true
+                                    S.zeroRescueObservedAt = tnow
+                                    local rescueFloor = (tonumber(cfg.deathLikeLethalThr) or 0.05) * 0.6
+                                    MS.LogCore(string.format(
+                                        "[Rescue] zero observed id=%s name=%s hpPrev=%.4f drop=%.4f distM=%.2f corpseBefore=%s floor=%.4f",
+                                        tostring(entity.id), name, hpPrev, drop, distance,
+                                        tostring(corpseBefore), rescueFloor))
+
+                                    if MS.ClampHealthMin then
+                                        pcall(MS.ClampHealthMin, entity, rescueFloor)
+                                    end
+                                    local okAfter, hpAfter, deadAfter = ReadHpNormalized(entity)
+                                    local corpseAfter = IsCorpseByApiOrName(entity, name, cfg)
+                                    if okAfter and hpAfter ~= nil then
+                                        S.discoveryHpPrev = hpAfter
+                                    end
+                                    MS.LogCore(string.format(
+                                        "[Rescue] clamp result id=%s name=%s hpAfter=%s deadAfter=%s corpseAfter=%s",
+                                        tostring(entity.id), name, tostring(hpAfter),
+                                        tostring(deadAfter), tostring(corpseAfter)))
+                                end
                             end
                         end
                     end
@@ -280,6 +727,10 @@ end
 
 local function DeathLikeKO(e, name, S, hpPrev, hp, cfg, tnow, isBoss, stat)
     if not (cfg.deathLikeKO and hp ~= nil) then return end
+    if S.immortalityProbeApplied and
+            cfg.immortalityProbeObserveNaturalFall == true then
+        return
+    end
     -- Death-like KO: intercept lethal or near-lethal drops
     do
         -- derive all signals once
@@ -300,8 +751,12 @@ local function DeathLikeKO(e, name, S, hpPrev, hp, cfg, tnow, isBoss, stat)
             else
                 -- AND/OR mode
                 local requireBoth = (cfg.deathLikeModeAND == true)
-                local shouldArm   = requireBoth and (lethalNow and bigDrop) or
-                    (lethalNow or bigDrop)
+                local shouldArm
+                if requireBoth then
+                    shouldArm = lethalNow and bigDrop
+                else
+                    shouldArm = lethalNow or bigDrop
+                end
 
                 if shouldArm then
                     -- ownership gate
@@ -364,7 +819,15 @@ local function DeathLikeKO(e, name, S, hpPrev, hp, cfg, tnow, isBoss, stat)
 
                         -- micro-delay (snap fast on lethal/zero)
                         local delay = tonumber(cfg.deathLikeDelayMs) or 120
-                        if lethalNow or atZero then delay = math.min(delay, 30) end
+                        local probeDelay = S.immortalityProbeApplied == true
+                        if probeDelay then
+                            delay = tonumber(cfg.immortalityProbeKODelayMs) or 450
+                        elseif lethalNow or atZero then
+                            delay = math.min(delay, 30)
+                        end
+                        MS.LogCore(string.format(
+                            "[ImmortalityProbe] deathLike KO scheduled name=%s hp=%.4f delayMs=%d probeProtected=%s",
+                            name, hp or -1, delay, tostring(probeDelay)))
 
                         Script.SetTimer(delay, function()
                             local applied = false
@@ -383,6 +846,27 @@ local function DeathLikeKO(e, name, S, hpPrev, hp, cfg, tnow, isBoss, stat)
                                     MS
                                         .ClampHealthPostKO(e)
                                 end
+                                local hadProbe = S.immortalityProbeApplied == true
+                                local retainProbe = hadProbe and
+                                    cfg.immortalityProbeRetainAfterKO == true
+                                local probeRemoved = false
+                                if not retainProbe then
+                                    probeRemoved = RemoveImmortalityProbe(e, S, cfg, name,
+                                        "deathLikeKOApplied")
+                                end
+                                if hadProbe then
+                                    local okAfter, hpAfter, deadAfter = ReadHpNormalized(e)
+                                    local corpseAfter = IsCorpseByApiOrName(e, name, cfg)
+                                    MS.LogCore(string.format(
+                                        "[ImmortalityProbe] post-deathLike name=%s hpAfter=%s deadAfter=%s corpseAfter=%s probeRetained=%s probeRemoved=%s stateReadOk=%s",
+                                        name, tostring(hpAfter), tostring(deadAfter),
+                                        tostring(corpseAfter), tostring(retainProbe),
+                                        tostring(probeRemoved), tostring(okAfter)))
+                                end
+                                if retainProbe then
+                                    ScheduleImmortalityProbeRelease(e, S, cfg, name,
+                                        "confirmedKO")
+                                end
                                 MercyStrike._per[e.id]._armedDeathLike = nil
                                 armCooldown(e, nowSec())
                             end
@@ -400,8 +884,97 @@ local function EdgeKO(e, name, S, hpPrev, hp, cfg, isBoss, stat)
 
     -- Edge KO (unchanged)
     local thr = tonumber(cfg.hpThreshold) or 0.12
+    local deathLikeArmed = MercyStrike and MercyStrike._per and e and e.id and
+        MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike
+    local probeReady = S.immortalityProbeApplied == true and hp ~= nil and
+        hp <= thr and not deathLikeArmed
+
+    -- Natural-fall feasibility path: the threshold only starts a durable
+    -- observer. Immortality remains active while the engine processes the
+    -- eventual lethal/down transition; no unconscious buff is forced here.
+    if cfg.immortalityProbeObserveNaturalFall == true and
+            S.immortalityProbeApplied then
+        if probeReady then
+            WatchNaturalFall(e, S, cfg, name, hp)
+            return
+        end
+        if S.immortalityTransitionWatching or S.immortalityNaturalDowned then
+            return
+        end
+    end
+
+    -- Deterministic feasibility path. The probe already proves that this is a
+    -- close-range combat candidate; keep it eligible after the short discovery
+    -- window and apply unconsciousness before removing immortality.
+    if not probeReady and S.immortalityProbeKOReadyAt ~= nil then
+        MS.LogCore(string.format(
+            "[ImmortalityProbe] threshold KO cancelled name=%s hp=%s reason=leftThresholdOrDeathLikeArmed",
+            name, tostring(hp)))
+        S.immortalityProbeKOReadyAt = nil
+        S.immortalityProbeKOScheduledHp = nil
+    end
+    if probeReady then
+        local tnow = nowSec()
+        local delayMs = tonumber(cfg.immortalityProbeKODelayMs) or 450
+        if S.immortalityProbeKOReadyAt == nil then
+            S.immortalityProbeKOReadyAt = tnow + (delayMs / 1000)
+            S.immortalityProbeKOScheduledHp = hp
+            MS.LogCore(string.format(
+                "[ImmortalityProbe] threshold KO scheduled name=%s hp=%.4f thr=%.4f delayMs=%d",
+                name, hp, thr, delayMs))
+            return
+        end
+        if tnow < S.immortalityProbeKOReadyAt then return end
+
+        local scheduledHp = S.immortalityProbeKOScheduledHp
+        S.immortalityProbeKOReadyAt = nil
+        S.immortalityProbeKOScheduledHp = nil
+        stat.edges = stat.edges + 1
+        stat.yours = stat.yours + 1
+        stat.rolled = stat.rolled + 1
+        MS.LogProbe(string.format(
+            "[ImmortalityProbe] threshold name=%s hp=%.4f scheduledHp=%s thr=%.4f hpPrev=%s deterministic=true",
+            name, hp, tostring(scheduledHp), thr, tostring(hpPrev)))
+
+        local applied = false
+        if MS_Unconscious and MS_Unconscious.Apply then
+            local okApply, result = pcall(MS_Unconscious.Apply, e,
+                cfg.buffId or "unconscious_permanent")
+            applied = okApply and result or false
+            if not okApply then
+                MS.LogCore("ERR: step=ImmortalityProbe.Unconscious.Apply name=" .. name)
+            end
+        end
+
+        if applied then
+            stat.applied = stat.applied + 1
+            if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+            local retainProbe = cfg.immortalityProbeRetainAfterKO == true
+            local removed = false
+            if not retainProbe then
+                removed = RemoveImmortalityProbe(e, S, cfg, name,
+                    "deterministicProbeKOApplied")
+            end
+            local okAfter, hpAfter, deadAfter = ReadHpNormalized(e)
+            local corpseAfter = IsCorpseByApiOrName(e, name, cfg)
+            MS.LogApply(string.format(
+                "KO applied (immortality probe) name=%s hpBefore=%.4f hpAfter=%s deadAfter=%s corpseAfter=%s probeRetained=%s probeRemoved=%s stateReadOk=%s",
+                name, hp, tostring(hpAfter), tostring(deadAfter),
+                tostring(corpseAfter), tostring(retainProbe),
+                tostring(removed), tostring(okAfter)))
+            if retainProbe then
+                ScheduleImmortalityProbeRelease(e, S, cfg, name, "confirmedKO")
+            end
+        else
+            MS.LogCore(string.format(
+                "[ImmortalityProbe] deterministic KO apply failed name=%s hp=%.4f; probe retained for retry",
+                name, hp))
+        end
+        return
+    end
+
     local crossed = (hpPrev ~= nil) and (hpPrev > thr) and (hp <= thr)
-    if (not (MercyStrike and MercyStrike._per and e and e.id and MercyStrike._per[e.id] and MercyStrike._per[e.id]._armedDeathLike)) and crossed then
+    if (not deathLikeArmed) and crossed then
         stat.edges = stat.edges + 1
 
         -- ownership (logging only; based on HitSense stamps)
@@ -463,6 +1036,7 @@ local function EdgeKO(e, name, S, hpPrev, hp, cfg, isBoss, stat)
                             ", p=" .. string.format("%.2f", chance) .. ")")
                         or (" (p=" .. string.format("%.2f", chance) .. " static)")))
                 if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                RemoveImmortalityProbe(e, S, cfg, name, "edgeKOApplied")
             else
                 if cfg.logging and cfg.logging.skip then
                     MS.LogSkip("rollFail name=" ..
@@ -523,6 +1097,7 @@ local function EdgeKO(e, name, S, hpPrev, hp, cfg, isBoss, stat)
                                 or (" (p=" .. string.format("%.2f", chance) .. " static)")))
 
                         if MS.ClampHealthPostKO then MS.ClampHealthPostKO(e) end
+                        RemoveImmortalityProbe(e, S, cfg, name, "graceKOApplied")
                     else
                         if cfg.logging and cfg.logging.skip then
                             MS.LogSkip("rollFail name=" ..
@@ -582,9 +1157,12 @@ local function CombatTick()
 
         -- name once
         local name = PrettyName(e)
+        local S = EnsurePer(e)
+        local zeroRescuePending = (S.zeroRescuePending == true)
 
         -- 1) corpse gate
-        if IsCorpseByApiOrName(e, name, cfg) then
+        if IsCorpseByApiOrName(e, name, cfg) and not zeroRescuePending and
+                not S.immortalityProbeApplied then
             stat.filtered = stat.filtered + 1
             return
         end
@@ -608,7 +1186,6 @@ local function CombatTick()
         end
 
         -- 5) per-entity scratch & KO maintenance
-        local S = EnsurePer(e)
         if S.koApplied then
             MaintainKOIfNeeded(e, S, cfg)
             return
@@ -616,7 +1193,8 @@ local function CombatTick()
 
         -- 6) ALWAYS read + track HP BEFORE cooldown gating
         local okHP, hp, isDead = ReadHpNormalized(e)
-        if isDead then
+        if isDead and not zeroRescuePending and
+                not S.immortalityProbeApplied then
             if S.koApplied and MS and MS.ClampHealthMin then MS.ClampHealthMin(e) end
             return
         end
@@ -640,7 +1218,7 @@ local function CombatTick()
         end
 
         -- 7) cooldown throttles HEAVY work only
-        if cooldownActive(e, tnow) then return end
+        if cooldownActive(e, tnow) and not zeroRescuePending then return end
 
         -- 8) HEAVY WORK
         seen = seen + 1
@@ -651,6 +1229,13 @@ local function CombatTick()
         S.candidateHpPrev = nil
         S.pendingEdgeHpPrev = nil
         S.pendingEdgeHp = nil
+        S.zeroRescuePending = nil
+
+        if zeroRescuePending then
+            MS.LogCore(string.format(
+                "[Rescue] dispatch id=%s name=%s hpPrev=%s hp=%s isDead=%s",
+                tostring(e.id), name, tostring(hpPrev), tostring(hp), tostring(isDead)))
+        end
 
         local isBoss = MS.IsBoss and MS.IsBoss(e) or false
 
@@ -779,6 +1364,29 @@ local function StopCombatPoller()
         MS_Poller.StopNamed("combat")
         MS_Poller.StopNamed("hitsense")
     end
+    for _, S in pairs(MercyStrike._per or {}) do
+        if S and (S.immortalityProbeApplied or S.immortalityProbeAttempted) then
+            local entity = S.immortalityProbeEntity
+            local cfg = MS.config or {}
+            local retainAll = cfg.immortalityProbeRetainAllCandidates == true
+            local retainKO = S.koApplied and
+                cfg.immortalityProbeRetainAfterKO == true
+            local retainNatural = S.immortalityNaturalDowned and
+                cfg.immortalityProbeRetainNaturalDown == true
+            local retain = retainAll or retainKO or retainNatural
+            if retain then
+                MS.LogCore(string.format(
+                    "[ImmortalityProbe] retained after combat name=%s id=%s retainAll=%s koApplied=%s naturalDowned=%s",
+                    PrettyName(entity), tostring(entity and entity.id),
+                    tostring(retainAll),
+                    tostring(S.koApplied == true),
+                    tostring(S.immortalityNaturalDowned == true)))
+            else
+                RemoveImmortalityProbe(entity, S, MS.config or {},
+                    PrettyName(entity), "combatEnd")
+            end
+        end
+    end
     if MS.HitSense and MS.HitSense.LifecycleStopped then
         RunDiagnostic("hitSenseStopped", MS.HitSense.LifecycleStopped,
             "StopCombatPoller")
@@ -793,8 +1401,12 @@ end
 -- World detector (slow) → starts/stops combat poller
 -- ------------------------
 local function WorldTick()
+    MonitorRetainedImmortalityProbes()
     local inCombat = MS.IsInCombat()
-    MS.LogCore("world tick (inCombat=" .. tostring(inCombat) .. ")")
+    if MS.config and MS.config.diagnostics and
+            MS.config.diagnostics.worldTicks == true then
+        MS.LogCore("world tick (inCombat=" .. tostring(inCombat) .. ")")
+    end
 
     if inCombat then
         if not combatActive then
@@ -828,9 +1440,11 @@ function MS.Start()
 end
 
 function MS.Stop()
+    MercyStrike.CleanupImmortalityProbes("MS.Stop")
     if MS_Poller and MS_Poller.StopNamed then
         MS_Poller.StopNamed("hitsense") -- add this
         MS_Poller.StopNamed("combat")
+        MS_Poller.StopNamed("transition")
         MS_Poller.StopNamed("world")
     end
     if MS.HitSense and MS.HitSense.LifecycleStopped then

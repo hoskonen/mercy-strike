@@ -270,6 +270,8 @@ local function Inspect(entity, player, cfg)
         CallAIForEntity("GetAttentionTargetThreat", entity)
 
     local candidateState = MS._per and record.id and MS._per[record.id] or nil
+    record.immortalityProbeActive = candidateState and
+        candidateState.immortalityProbeApplied == true or false
     record.candidateActive = false
     if MS.IsRecentCombatCandidate then
         local ok, value = pcall(MS.IsRecentCombatCandidate, entity)
@@ -334,6 +336,8 @@ local function Inspect(entity, player, cfg)
                 record.hostilityReason = "recentlyDamagedByPlayer"
             elseif record.combatDangerOk and Bool(record.combatDanger) then
                 record.hostilityReason = "combatDanger"
+            elseif record.immortalityProbeActive then
+                record.hostilityReason = "immortalityProbeArmed"
             elseif record.candidateActive then
                 record.hostilityReason = "recentCloseHpDrop"
             else
@@ -375,7 +379,7 @@ local function FormatRecord(eventName, record)
     local candidateRemaining = record.candidateRemaining and
         string.format("%.2f", record.candidateRemaining) or "nil"
     return string.format(
-        "entity event=%s id=%s name=%s distM=%s hp=%s entityFactionAvail=%s entityFaction=%s playerFactionAvail=%s playerFaction=%s factionComparison=%s aiHostileAvail=%s aiHostileResult=%s aiEntityFactionAvail=%s aiEntityFaction=%s aiPlayerFactionAvail=%s aiPlayerFaction=%s aiFactionComparison=%s aiHostileReverseAvail=%s aiHostileReverseResult=%s aiPersonalHostileAvail=%s aiPersonalHostileResult=%s attentionEntityAvail=%s attentionEntityResult=%s attentionEntityMatchesPlayer=%s attentionNameAvail=%s attentionNameResult=%s attentionNameMatchesPlayer=%s attentionTypeAvail=%s attentionTypeResult=%s attentionThreatAvail=%s attentionThreatResult=%s candidateActive=%s candidateDrop=%s candidateDistM=%s candidateRemainingS=%s publicEnemyAvail=%s publicEnemyResult=%s recentDamageAvail=%s recentDamageResult=%s combatDangerAvail=%s combatDangerResult=%s finalHostile=%s reason=%s",
+        "entity event=%s id=%s name=%s distM=%s hp=%s entityFactionAvail=%s entityFaction=%s playerFactionAvail=%s playerFaction=%s factionComparison=%s aiHostileAvail=%s aiHostileResult=%s aiEntityFactionAvail=%s aiEntityFaction=%s aiPlayerFactionAvail=%s aiPlayerFaction=%s aiFactionComparison=%s aiHostileReverseAvail=%s aiHostileReverseResult=%s aiPersonalHostileAvail=%s aiPersonalHostileResult=%s attentionEntityAvail=%s attentionEntityResult=%s attentionEntityMatchesPlayer=%s attentionNameAvail=%s attentionNameResult=%s attentionNameMatchesPlayer=%s attentionTypeAvail=%s attentionTypeResult=%s attentionThreatAvail=%s attentionThreatResult=%s immortalityProbeActive=%s candidateActive=%s candidateDrop=%s candidateDistM=%s candidateRemainingS=%s publicEnemyAvail=%s publicEnemyResult=%s recentDamageAvail=%s recentDamageResult=%s combatDangerAvail=%s combatDangerResult=%s finalHostile=%s reason=%s",
         tostring(eventName), Value(record.id), tostring(record.name), distance, hp,
         tostring(record.entityFactionAvailable), FactionResult(record.entityFactionAvailable, record.entityFactionOk, record.entityFaction),
         tostring(record.playerFactionAvailable), FactionResult(record.playerFactionAvailable, record.playerFactionOk, record.playerFaction),
@@ -391,7 +395,7 @@ local function FormatRecord(eventName, record)
         tostring(record.attentionNameMatchesPlayer),
         tostring(record.attentionTypeAvailable), attentionTypeResult,
         tostring(record.attentionThreatAvailable), attentionThreatResult,
-        tostring(record.candidateActive), candidateDrop, candidateDistance,
+        tostring(record.immortalityProbeActive), tostring(record.candidateActive), candidateDrop, candidateDistance,
         candidateRemaining,
         tostring(record.publicEnemyAvailable), publicEnemyResult,
         tostring(record.recentDamageAvailable), Result(record.recentDamageAvailable, record.recentDamageOk, record.recentDamage),
@@ -440,6 +444,9 @@ end
 function D.Scan(list, cfg)
     if not D._active then return end
     list = type(list) == "table" and list or {}
+    local diagnosticCfg = cfg and cfg.diagnostics or {}
+    local entityDetails = diagnosticCfg.entityDetails == true
+    local scanSummaries = diagnosticCfg.scanSummaries == true
     local player = MS.GetPlayer and MS.GetPlayer() or nil
     local seenNow = {}
     local summary = { souls = #list, humans = 0, hostile = 0, notHostile = 0, healthUnavailable = 0 }
@@ -458,19 +465,22 @@ function D.Scan(list, cfg)
             seenNow[key] = true
             local previous = D._entities[key]
             if not previous or not previous.present then
-                Log(FormatRecord(previous and "reappearance" or "firstAppearance", record))
+                if entityDetails then
+                    Log(FormatRecord(previous and "reappearance" or
+                        "firstAppearance", record))
+                end
             else
                 local hpChanged = HpSignature(previous.hp) ~= HpSignature(record.hp)
                 local hostilityChanged = previous.finalHostile ~= record.finalHostile
-                if hpChanged then
+                if entityDetails and hpChanged then
                     Log(FormatRecord("hpChange", record) .. " previousHp=" .. HpSignature(previous.hp))
                 end
-                if hostilityChanged then
+                if entityDetails and hostilityChanged then
                     Log(FormatRecord("hostilityChange", record) ..
                         " previousFinalHostile=" .. tostring(previous.finalHostile) ..
                         " previousReason=" .. tostring(previous.hostilityReason))
                 end
-                if not hpChanged and not hostilityChanged and
+                if entityDetails and not hpChanged and not hostilityChanged and
                         previous.combatSignalSignature ~= record.combatSignalSignature then
                     Log(FormatRecord("combatSignalChange", record))
                 end
@@ -486,18 +496,24 @@ function D.Scan(list, cfg)
             previous.missingScans = (previous.missingScans or 0) + 1
             if previous.missingScans >= 2 then
                 previous.present = false
-                Log(string.format("entity event=disappearance id=%s name=%s lastHp=%s lastFinalHostile=%s reason=notSeenForTwoScans",
-                    Value(previous.id), tostring(previous.name), HpSignature(previous.hp), tostring(previous.finalHostile)))
+                if entityDetails then
+                    Log(string.format("entity event=disappearance id=%s name=%s lastHp=%s lastFinalHostile=%s reason=notSeenForTwoScans",
+                        Value(previous.id), tostring(previous.name),
+                        HpSignature(previous.hp),
+                        tostring(previous.finalHostile)))
+                end
             end
         end
     end
 
     local signature = string.format("%d/%d/%d/%d/%d", summary.souls, summary.humans,
         summary.hostile, summary.notHostile, summary.healthUnavailable)
-    if signature ~= D._lastSummary then
+    if scanSummaries and signature ~= D._lastSummary then
         D._lastSummary = signature
         Log(string.format("scan soulsFound=%d humansConsidered=%d hostileAccepted=%d notHostileRejected=%d healthUnavailable=%d",
             summary.souls, summary.humans, summary.hostile, summary.notHostile, summary.healthUnavailable))
+    else
+        D._lastSummary = signature
     end
 end
 
