@@ -10,6 +10,12 @@ D._entities = D._entities or {}
 D._active = D._active or false
 D._lastSummary = D._lastSummary or nil
 
+function D.ResetSession()
+    D._entities = {}
+    D._active = false
+    D._lastSummary = nil
+end
+
 local function Log(message)
     if MS and MS.LogCore then
         MS.LogCore("[Diag] " .. tostring(message))

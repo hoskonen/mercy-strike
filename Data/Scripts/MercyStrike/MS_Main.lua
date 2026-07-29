@@ -19,6 +19,7 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Diagnostics.lua")
 local combatActive = false
 local rescanUntil = {} -- ent.id -> time (sec) before reconsidering
 MercyStrike._combatEndTimer = MercyStrike._combatEndTimer or nil
+MercyStrike._sessionGeneration = MercyStrike._sessionGeneration or 0
 local lastDiagnosticError = nil
 
 local function RunDiagnostic(name, fn, ...)
@@ -39,6 +40,14 @@ local function nowSec()
         if ok and tonumber(value) then return tonumber(value) end
     end
     return tonumber(os.clock()) or 0
+end
+
+local function SessionGeneration()
+    return tonumber(MercyStrike._sessionGeneration) or 0
+end
+
+local function SessionIsCurrent(generation)
+    return generation == SessionGeneration()
 end
 
 local function cooldownActive(e, tnow)
@@ -183,7 +192,11 @@ local function ReadFinisherState(entity)
     end)
     if not okTargetActor then targetActor = nil end
 
-    local player = MS.GetPlayer and MS.GetPlayer() or nil
+    local player = nil
+    if MS.GetPlayer then
+        local okPlayer, value = pcall(MS.GetPlayer)
+        if okPlayer then player = value end
+    end
     local okPlayerActor, playerActor = pcall(function()
         return player and player.actor
     end)
@@ -252,6 +265,11 @@ local function DeathRescueAllowed(entity, cfg)
     return true
 end
 
+local WatchNaturalFall
+local EnsureTransitionPoller
+local StartMercyGuard
+local StopMercyGuardPoller
+
 local function ApplyImmortalityProbe(entity, S, cfg, name)
     if not (cfg and cfg.immortalityProbeEnabled == true) then return false end
     if not (entity and entity.soul and S) then return false end
@@ -277,8 +295,15 @@ local function ApplyImmortalityProbe(entity, S, cfg, name)
     S.immortalityProbeApplied = ok and true or false
     if ok then S.immortalityProbeEntity = entity end
     MS.LogCore(string.format(
-        "[ImmortalityProbe] add name=%s id=%s buff=%s available=true ok=%s result=%s",
-        name, tostring(entity.id), guid, tostring(ok), tostring(result)))
+        "[ImmortalityProbe] add generation=%d name=%s id=%s buff=%s available=true ok=%s result=%s",
+        SessionGeneration(), name, tostring(entity.id), guid, tostring(ok),
+        tostring(result)))
+    if S.immortalityProbeApplied and
+            cfg.immortalityProbeObserveNaturalFall == true and
+            type(WatchNaturalFall) == "function" then
+        local _, hp = ReadHpNormalized(entity)
+        WatchNaturalFall(entity, S, cfg, name, hp)
+    end
     return S.immortalityProbeApplied
 end
 
@@ -310,12 +335,313 @@ local function RemoveImmortalityProbe(entity, S, cfg, name, reason)
     S.immortalityProbeKOReadyAt = nil
     S.immortalityProbeKOScheduledHp = nil
     S.immortalityProbeReleaseScheduled = nil
+    S.immortalityProbeReleasePending = nil
+    S.immortalityProbeReleaseTrigger = nil
+    S.immortalityProbeReleaseStartedAt = nil
+    S.immortalityProbeReleaseUnconsciousAdded = nil
+    S.immortalityProbeReleaseStateUnavailableLogged = nil
     S.immortalityTransitionWatching = nil
     S.immortalityTransitionEntity = nil
     S.immortalityTransitionName = nil
     S.immortalityTransitionStartedAt = nil
+    S.immortalityTransitionLastHpChangeAt = nil
     S.immortalityTransitionHpPrev = nil
+    S.immortalityTransitionStateFailures = nil
+    S.immortalityTransitionInactivityLogged = nil
     return ok
+end
+
+local function ClearMercyGuardState(S)
+    if not S then return end
+    S.mercyGuardActive = nil
+    S.mercyGuardEntity = nil
+    S.mercyGuardName = nil
+    S.mercyGuardStartedAt = nil
+    S.mercyGuardOutsideSince = nil
+    S.mercyGuardStateFailures = nil
+    S.mercyGuardDistanceFailures = nil
+    S.mercyGuardClampCount = nil
+    S.mercyGuardLastClampAt = nil
+    S.mercyGuardLastHeartbeatAt = nil
+end
+
+local function StopMercyGuard(S, reason, hp, distance)
+    if not (S and S.mercyGuardActive) then return end
+    local entity = S.mercyGuardEntity
+    local name = S.mercyGuardName or PrettyName(entity)
+    local clamps = S.mercyGuardClampCount or 0
+    ClearMercyGuardState(S)
+    MS.LogCore(string.format(
+        "[MercyGuard] stopped name=%s id=%s reason=%s hp=%s distanceM=%s clamps=%d",
+        tostring(name), tostring(entity and entity.id), tostring(reason),
+        tostring(hp), tostring(distance), clamps))
+end
+
+local function MercyGuardTick()
+    local cfg = MS.config or {}
+    local floorHp = tonumber(cfg.mercyGuardFloorHp) or 0.10
+    local triggerHp = tonumber(cfg.mercyGuardTriggerHp) or 0.08
+    if triggerHp > floorHp then triggerHp = floorHp end
+    local clampCooldownS =
+        (tonumber(cfg.mercyGuardClampCooldownMs) or 1000) / 1000
+    if clampCooldownS < 0 then clampCooldownS = 0 end
+    local radius = tonumber(cfg.mercyGuardRadiusM) or 10
+    local outsideGrace = tonumber(cfg.mercyGuardOutsideGraceS) or 10
+    local failureLimit = tonumber(cfg.mercyGuardStateFailureLimit) or 10
+    local heartbeatS = tonumber(cfg.mercyGuardHeartbeatS) or 10
+    local tnow = nowSec()
+    local active = 0
+    local player = nil
+    if MS.GetPlayer then
+        local okPlayer, value = pcall(MS.GetPlayer)
+        if okPlayer then player = value end
+    end
+
+    for _, S in pairs(MercyStrike._per or {}) do
+        if S and S.mercyGuardActive then
+            active = active + 1
+            local entity = S.mercyGuardEntity
+            local okHP, hp, isDead = ReadHpNormalized(entity)
+            local finisher = ReadFinisherState(entity)
+            local unconscious = finisher.unconsciousOk and
+                (finisher.unconscious == true or finisher.unconscious == 1)
+            local distance = player and entity and
+                DistanceMeters(player, entity) or nil
+
+            if not entity then
+                StopMercyGuard(S, "entityUnavailable", hp, distance)
+                active = active - 1
+            elseif isDead or (hp ~= nil and hp <= 0) then
+                StopMercyGuard(S, "deadOrFinished", hp, distance)
+                active = active - 1
+            elseif finisher.unconsciousAvailable and
+                    finisher.unconsciousOk and not unconscious then
+                StopMercyGuard(S, "noLongerUnconscious", hp, distance)
+                active = active - 1
+            elseif not okHP or hp == nil or
+                    not finisher.unconsciousAvailable or
+                    not finisher.unconsciousOk then
+                S.mercyGuardStateFailures =
+                    (S.mercyGuardStateFailures or 0) + 1
+                if S.mercyGuardStateFailures >= failureLimit then
+                    StopMercyGuard(S, "stateUnavailable", hp, distance)
+                    active = active - 1
+                end
+            else
+                S.mercyGuardStateFailures = 0
+                if distance == nil then
+                    S.mercyGuardDistanceFailures =
+                        (S.mercyGuardDistanceFailures or 0) + 1
+                    if S.mercyGuardDistanceFailures >= failureLimit then
+                        StopMercyGuard(S, "distanceUnavailable", hp, distance)
+                        active = active - 1
+                    end
+                else
+                    S.mercyGuardDistanceFailures = 0
+                end
+
+                if S.mercyGuardActive and distance and radius > 0 and
+                        distance > radius then
+                    S.mercyGuardOutsideSince =
+                        S.mercyGuardOutsideSince or tnow
+                    if outsideGrace <= 0 or
+                            (tnow - S.mercyGuardOutsideSince) >= outsideGrace then
+                        StopMercyGuard(S, "outsideGrace", hp, distance)
+                        active = active - 1
+                    end
+                elseif S.mercyGuardActive and distance then
+                    S.mercyGuardOutsideSince = nil
+                end
+
+                local lastClampAt = S.mercyGuardLastClampAt
+                local clampReady = lastClampAt == nil or
+                    (tnow - lastClampAt) >= clampCooldownS
+                if S.mercyGuardActive and hp <= triggerHp and clampReady then
+                    S.mercyGuardLastClampAt = tnow
+                    local clamped = false
+                    local clampMethod = "unavailable"
+                    if MS.ClampHealthMin then
+                        local okCall, changed, method =
+                            pcall(MS.ClampHealthMin, entity, floorHp)
+                        clamped = okCall and changed == true
+                        clampMethod = okCall and tostring(method) or
+                            ("error:" .. tostring(changed))
+                    elseif MS.ClampHealthPostKO then
+                        local okCall, changed, method =
+                            pcall(MS.ClampHealthPostKO, entity)
+                        clamped = okCall and changed == true
+                        clampMethod = okCall and tostring(method) or
+                            ("error:" .. tostring(changed))
+                    end
+                    local _, hpAfter = ReadHpNormalized(entity)
+                    S.mercyGuardClampCount =
+                        (S.mercyGuardClampCount or 0) + 1
+                    local count = S.mercyGuardClampCount
+                    if count == 1 or (count % 10) == 0 then
+                        MS.LogCore(string.format(
+                            "[MercyGuard] clamp name=%s id=%s hpBefore=%s hpAfter=%s trigger=%s floor=%s cooldownS=%s ok=%s method=%s count=%d",
+                            tostring(S.mercyGuardName),
+                            tostring(entity and entity.id), tostring(hp),
+                            tostring(hpAfter), tostring(triggerHp),
+                            tostring(floorHp), tostring(clampCooldownS),
+                            tostring(clamped), tostring(clampMethod), count))
+                    end
+                end
+
+                if S.mercyGuardActive and heartbeatS > 0 then
+                    local lastHeartbeat =
+                        S.mercyGuardLastHeartbeatAt or
+                        S.mercyGuardStartedAt or tnow
+                    if (tnow - lastHeartbeat) >= heartbeatS then
+                        S.mercyGuardLastHeartbeatAt = tnow
+                        MS.LogCore(string.format(
+                            "[MercyGuard] heartbeat generation=%d name=%s id=%s hp=%s distanceM=%s unconscious=%s clamps=%d",
+                            SessionGeneration(), tostring(S.mercyGuardName),
+                            tostring(entity.id), tostring(hp),
+                            tostring(distance), tostring(unconscious),
+                            S.mercyGuardClampCount or 0))
+                    end
+                end
+            end
+        end
+    end
+    return active > 0
+end
+
+local function EnsureMercyGuardPoller()
+    if MercyStrike._mercyGuardTimerId then return true end
+    if not (Script and type(Script.SetTimer) == "function") then return false end
+
+    local interval = tonumber(MS.config and MS.config.mercyGuardPollMs) or 100
+    local generation = SessionGeneration()
+    local function tick()
+        if not SessionIsCurrent(generation) then return end
+        MercyStrike._mercyGuardTimerId = nil
+        local ok, hasActive = xpcall(MercyGuardTick, debug.traceback)
+        if not ok then
+            MS.LogCore("[MercyGuard] poller error: " .. tostring(hasActive))
+            return
+        end
+        if hasActive and SessionIsCurrent(generation) then
+            MercyStrike._mercyGuardTimerId = Script.SetTimer(interval, tick)
+        else
+            MS.LogCore("[MercyGuard] poller stopped reason=idle")
+        end
+    end
+
+    local ok, hasActive = xpcall(MercyGuardTick, debug.traceback)
+    if not ok then
+        MS.LogCore("[MercyGuard] poller start error: " .. tostring(hasActive))
+        return false
+    end
+    if not hasActive then return false end
+    MercyStrike._mercyGuardTimerId = Script.SetTimer(interval, tick)
+    MS.LogCore("[MercyGuard] poller started (" .. tostring(interval) .. " ms)")
+    return true
+end
+
+StartMercyGuard = function(entity, S, cfg, name, hp)
+    if not (cfg and cfg.mercyGuardEnabled == true) then return false end
+    if not (entity and S) or S.mercyGuardActive then return false end
+    S.mercyGuardActive = true
+    S.mercyGuardEntity = entity
+    S.mercyGuardName = name
+    S.mercyGuardStartedAt = nowSec()
+    S.mercyGuardOutsideSince = nil
+    S.mercyGuardStateFailures = 0
+    S.mercyGuardDistanceFailures = 0
+    S.mercyGuardClampCount = 0
+    S.mercyGuardLastClampAt = nil
+    S.mercyGuardLastHeartbeatAt = nowSec()
+    MS.LogCore(string.format(
+        "[MercyGuard] started name=%s id=%s hp=%s trigger=%s floor=%s pollMs=%s clampCooldownMs=%s radiusM=%s outsideGraceS=%s",
+        tostring(name), tostring(entity.id), tostring(hp),
+        tostring(cfg.mercyGuardTriggerHp or 0.08),
+        tostring(cfg.mercyGuardFloorHp or 0.10),
+        tostring(cfg.mercyGuardPollMs or 100),
+        tostring(cfg.mercyGuardClampCooldownMs or 1000),
+        tostring(cfg.mercyGuardRadiusM or 10),
+        tostring(cfg.mercyGuardOutsideGraceS or 10)))
+    local started = EnsureMercyGuardPoller()
+    if not started and S.mercyGuardActive then
+        StopMercyGuard(S, "pollerUnavailable", hp, nil)
+    end
+    return started
+end
+
+StopMercyGuardPoller = function(reason)
+    local timerId = MercyStrike._mercyGuardTimerId
+    if timerId then
+        pcall(Script.KillTimer, timerId)
+        MercyStrike._mercyGuardTimerId = nil
+        MS.LogCore("[MercyGuard] poller stopped reason=" ..
+            tostring(reason or "manual"))
+    end
+end
+
+local function CompleteImmortalityProbeRelease(entity, S, cfg, name, reason)
+    if not (entity and S and S.immortalityProbeApplied) then return false end
+
+    local trigger = tostring(S.immortalityProbeReleaseTrigger or "unknown")
+    local unconsciousAdded =
+        S.immortalityProbeReleaseUnconsciousAdded == true
+    local releaseMinHp =
+        tonumber(cfg and cfg.immortalityProbeReleaseMinHp) or 0.25
+    local okBefore, hpBefore, deadBefore = ReadHpNormalized(entity)
+    local corpseBefore = IsCorpseByApiOrName(entity, name, cfg)
+
+    local clampCallOk = false
+    local clampSuccess = false
+    local clampMethod = "unavailable"
+    local clampBeforeAbs = nil
+    local clampAfterAbs = nil
+    if MS.ClampHealthMin then
+        clampCallOk, clampSuccess, clampMethod, clampBeforeAbs, clampAfterAbs =
+            pcall(MS.ClampHealthMin, entity, releaseMinHp)
+    elseif MS.ClampHealthPostKO then
+        clampCallOk, clampSuccess, clampMethod, clampBeforeAbs, clampAfterAbs =
+            pcall(MS.ClampHealthPostKO, entity)
+    end
+    MS.LogCore(string.format(
+        "[HealthClamp] release name=%s id=%s floor=%s callOk=%s success=%s method=%s hpAbsBefore=%s hpAbsAfter=%s",
+        tostring(name), tostring(entity.id), tostring(releaseMinHp),
+        tostring(clampCallOk), tostring(clampSuccess), tostring(clampMethod),
+        tostring(clampBeforeAbs), tostring(clampAfterAbs)))
+
+    local okClamped, hpClamped, deadClamped = ReadHpNormalized(entity)
+    local removed = RemoveImmortalityProbe(entity, S, cfg, name,
+        trigger .. "StableRelease")
+    S.immortalityProbeReleasedForFinisher = removed and true or false
+    S.immortalityProbeReleasedEntity = entity
+    S.immortalityProbeReleasedName = name
+
+    local okAfter, hpAfter, deadAfter = ReadHpNormalized(entity)
+    local corpseAfter = IsCorpseByApiOrName(entity, name, cfg)
+    local finisherAfter = ReadFinisherState(entity)
+    S.immortalityProbeReleasedMonitorSeen = true
+    S.immortalityProbeReleasedMonitorHp = hpAfter
+    S.immortalityProbeReleasedMonitorDead = deadAfter
+    S.immortalityProbeReleasedMonitorCorpse = corpseAfter
+    S.immortalityProbeReleasedFinisherSignature =
+        FinisherStateSignature(finisherAfter)
+    MS.LogCore(string.format(
+        "[ImmortalityProbe] stable release name=%s id=%s trigger=%s reason=%s removed=%s unconsciousPreexisting=%s unconsciousAdded=%s hpBefore=%s hpClamped=%s releaseMinHp=%s deadBefore=%s deadClamped=%s corpseBefore=%s hpAfter=%s deadAfter=%s corpseAfter=%s targetIsUnconscious=%s stateReadBeforeOk=%s stateReadClampedOk=%s stateReadAfterOk=%s",
+        tostring(name), tostring(entity.id), trigger, tostring(reason),
+        tostring(removed), tostring(S.koApplied == true and
+            not unconsciousAdded), tostring(unconsciousAdded),
+        tostring(hpBefore), tostring(hpClamped), tostring(releaseMinHp),
+        tostring(deadBefore), tostring(deadClamped), tostring(corpseBefore),
+        tostring(hpAfter), tostring(deadAfter), tostring(corpseAfter),
+        tostring(finisherAfter.unconscious), tostring(okBefore),
+        tostring(okClamped), tostring(okAfter)))
+    local unconsciousAfter = finisherAfter.unconsciousOk and
+        (finisherAfter.unconscious == true or
+            finisherAfter.unconscious == 1)
+    if removed and okAfter and not deadAfter and unconsciousAfter and
+            type(StartMercyGuard) == "function" then
+        StartMercyGuard(entity, S, cfg, name, hpAfter)
+    end
+    return removed
 end
 
 local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger)
@@ -327,6 +653,11 @@ local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger)
         delay = tonumber(cfg and cfg.immortalityProbeReleaseAfterKODelayMs) or 1500
     elseif trigger == "engineDown" then
         delay = tonumber(cfg and cfg.immortalityProbeEngineDownSettleMs) or 1500
+    elseif trigger == "timeoutFallback" or
+            trigger == "inactivityFallback" or
+            trigger == "absoluteTimeoutFallback" then
+        delay = tonumber(cfg and
+            cfg.immortalityProbeTimeoutFallbackDelayMs) or 750
     end
     if not enabled then return end
     if not (entity and S and S.immortalityProbeApplied) then return end
@@ -342,12 +673,15 @@ local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger)
 
     if delay < 0 then delay = 0 end
     S.immortalityProbeReleaseScheduled = true
+    local sessionGeneration = SessionGeneration()
     MS.LogCore(string.format(
-        "[ImmortalityProbe] release scheduled name=%s id=%s trigger=%s delayMs=%d koApplied=%s",
+        "[ImmortalityProbe] release scheduled generation=%d name=%s id=%s trigger=%s delayMs=%d koApplied=%s",
+        sessionGeneration,
         tostring(name), tostring(entity.id), trigger, delay,
         tostring(S.koApplied == true)))
 
     Script.SetTimer(delay, function()
+        if not SessionIsCurrent(sessionGeneration) then return end
         S.immortalityProbeReleaseScheduled = nil
         if not S.immortalityProbeApplied then
             MS.LogCore("[ImmortalityProbe] release skipped name=" ..
@@ -378,49 +712,69 @@ local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger)
             return
         end
 
-        if MS.ClampHealthPostKO then pcall(MS.ClampHealthPostKO, entity) end
-        local removed = RemoveImmortalityProbe(entity, S, cfg, name,
-            trigger .. "FinisherTest")
-        S.immortalityProbeReleasedForFinisher = removed and true or false
-        S.immortalityProbeReleasedEntity = entity
-        S.immortalityProbeReleasedName = name
-
-        local okAfter, hpAfter, deadAfter = ReadHpNormalized(entity)
-        local corpseAfter = IsCorpseByApiOrName(entity, name, cfg)
-        local finisherAfter = ReadFinisherState(entity)
-        S.immortalityProbeReleasedMonitorSeen = true
-        S.immortalityProbeReleasedMonitorHp = hpAfter
-        S.immortalityProbeReleasedMonitorDead = deadAfter
-        S.immortalityProbeReleasedMonitorCorpse = corpseAfter
-        S.immortalityProbeReleasedFinisherSignature =
-            FinisherStateSignature(finisherAfter)
+        local startedAt = nowSec()
+        S.immortalityProbeReleasePending = true
+        S.immortalityProbeReleaseTrigger = trigger
+        S.immortalityProbeReleaseStartedAt = startedAt
+        S.immortalityProbeReleaseUnconsciousAdded =
+            unconsciousAdded and true or false
+        S.immortalityTransitionWatching = true
+        S.immortalityTransitionEntity = entity
+        S.immortalityTransitionName = name
+        S.immortalityTransitionStartedAt = startedAt
+        S.immortalityTransitionLastHpChangeAt = startedAt
+        S.immortalityTransitionHpPrev = hpBefore
+        S.immortalityTransitionStateFailures = 0
         MS.LogCore(string.format(
-            "[ImmortalityProbe] released for finisher test name=%s id=%s trigger=%s removed=%s unconsciousPreexisting=%s unconsciousAdded=%s hpBefore=%s deadBefore=%s corpseBefore=%s hpAfter=%s deadAfter=%s corpseAfter=%s targetIsUnconsciousAvail=%s targetIsUnconsciousOk=%s targetIsUnconscious=%s playerCanMercyAvail=%s playerCanMercyOk=%s playerCanMercy=%s stateReadBeforeOk=%s stateReadAfterOk=%s",
-            tostring(name), tostring(entity.id), trigger, tostring(removed),
+            "[ImmortalityProbe] release stabilization started name=%s id=%s trigger=%s unconsciousPreexisting=%s unconsciousAdded=%s hp=%s dead=%s corpse=%s stableTargetS=%s absoluteTimeoutS=%s releaseMinHp=%s stateReadOk=%s",
+            tostring(name), tostring(entity.id), trigger,
             tostring(S.koApplied == true and not unconsciousAdded),
-            tostring(unconsciousAdded), tostring(hpBefore), tostring(deadBefore),
-            tostring(corpseBefore), tostring(hpAfter), tostring(deadAfter),
-            tostring(corpseAfter),
-            tostring(finisherAfter.unconsciousAvailable),
-            tostring(finisherAfter.unconsciousOk),
-            tostring(finisherAfter.unconscious),
-            tostring(finisherAfter.mercyAvailable),
-            tostring(finisherAfter.mercyOk),
-            tostring(finisherAfter.canMercy),
-            tostring(okBefore), tostring(okAfter)))
+            tostring(unconsciousAdded), tostring(hpBefore),
+            tostring(deadBefore), tostring(corpseBefore),
+            tostring(cfg.immortalityProbeReleaseStableS or 5),
+            tostring(cfg.immortalityProbeReleaseAbsoluteTimeoutS or 60),
+            tostring(cfg.immortalityProbeReleaseMinHp or 0.25),
+            tostring(okBefore)))
+        if type(EnsureTransitionPoller) == "function" then
+            EnsureTransitionPoller()
+        end
     end)
 end
 
 local function TransitionTick()
     local cfg = MS.config or {}
-    local timeout = tonumber(cfg.immortalityProbeTransitionWatchTimeoutS) or 20
+    local inactivityTimeout =
+        tonumber(cfg.immortalityProbeTransitionWatchTimeoutS) or 20
+    local absoluteTimeout =
+        tonumber(cfg.immortalityProbeTransitionAbsoluteTimeoutS) or 90
+    local safeRecoveryHp =
+        tonumber(cfg.immortalityProbeSafeRecoveryHp) or 0.25
+    local timeoutFallbackHp =
+        tonumber(cfg.immortalityProbeTimeoutFallbackHp) or 0.15
+    local safeStableS =
+        tonumber(cfg.immortalityProbeSafeRecoveryStableS) or 5
+    local failureLimit =
+        tonumber(cfg.immortalityProbeStateFailureLimit) or 10
+    local releaseStableS =
+        tonumber(cfg.immortalityProbeReleaseStableS) or 5
+    local releaseAbsoluteTimeout =
+        tonumber(cfg.immortalityProbeReleaseAbsoluteTimeoutS) or 60
     local tnow = nowSec()
+    local inCombat = false
+    if MS.IsInCombat then
+        local okCombat, value = pcall(MS.IsInCombat)
+        inCombat = okCombat and value == true
+    end
+    local active = 0
+
     for _, S in pairs(MercyStrike._per or {}) do
         if S and S.immortalityTransitionWatching then
+            active = active + 1
             local entity = S.immortalityTransitionEntity
             local name = S.immortalityTransitionName or PrettyName(entity)
             if not (entity and S.immortalityProbeApplied) then
                 S.immortalityTransitionWatching = nil
+                active = active - 1
             else
                 local okHP, hp, isDead = ReadHpNormalized(entity)
                 local finisher = ReadFinisherState(entity)
@@ -434,43 +788,191 @@ local function TransitionTick()
                 local resetObserved = hpPrev ~= nil and hp ~= nil and
                     hpPrev <= fromMax and hp >= toMin and rise >= riseMin
 
-                if hp ~= nil then S.immortalityTransitionHpPrev = hp end
-                if engineUnconscious or
-                        (not finisher.unconsciousAvailable and resetObserved) then
+                if okHP and hp ~= nil then
+                    S.immortalityTransitionStateFailures = 0
+                    S.immortalityProbeReleaseStateUnavailableLogged = nil
+                    if hpPrev == nil or math.abs(hp - hpPrev) >= 0.00001 then
+                        S.immortalityTransitionLastHpChangeAt = tnow
+                        S.immortalityTransitionInactivityLogged = nil
+                    end
+                    S.immortalityTransitionHpPrev = hp
+                else
+                    S.immortalityTransitionStateFailures =
+                        (S.immortalityTransitionStateFailures or 0) + 1
+                end
+
+                local startedAt = S.immortalityTransitionStartedAt or tnow
+                local lastChangeAt =
+                    S.immortalityTransitionLastHpChangeAt or startedAt
+                local inactiveFor = tnow - lastChangeAt
+                local age = tnow - startedAt
+                local stateUnavailable =
+                    (S.immortalityTransitionStateFailures or 0) >= failureLimit
+                local recoveredConscious = not inCombat and not engineUnconscious and
+                    hp ~= nil and hp >= safeRecoveryHp and
+                    inactiveFor >= safeStableS
+                local timedOut = not inCombat and inactivityTimeout > 0 and
+                    inactiveFor >= inactivityTimeout
+                local absoluteTimedOut = absoluteTimeout > 0 and
+                    age >= absoluteTimeout
+
+                if S.immortalityProbeReleasePending then
+                    local releaseStartedAt =
+                        S.immortalityProbeReleaseStartedAt or startedAt
+                    local releaseAge = tnow - releaseStartedAt
+                    local releaseStable = okHP and hp ~= nil and
+                        not isDead and inactiveFor >= releaseStableS
+                    local releaseTimedOut = releaseAbsoluteTimeout > 0 and
+                        releaseAge >= releaseAbsoluteTimeout
+                    if releaseStable or releaseTimedOut then
+                        S.immortalityTransitionWatching = nil
+                        active = active - 1
+                        MS.LogCore(string.format(
+                            "[ImmortalityProbe] release stabilization complete name=%s id=%s hp=%s stableS=%.2f ageS=%.2f timedOut=%s",
+                            tostring(name), tostring(entity.id), tostring(hp),
+                            inactiveFor, releaseAge,
+                            tostring(releaseTimedOut)))
+                        CompleteImmortalityProbeRelease(entity, S, cfg, name,
+                            releaseStable and "hpStable" or "absoluteTimeout")
+                    elseif stateUnavailable then
+                        if not S.immortalityProbeReleaseStateUnavailableLogged then
+                            S.immortalityProbeReleaseStateUnavailableLogged = true
+                            MS.LogCore(string.format(
+                                "[ImmortalityProbe] release stabilization waiting name=%s id=%s failures=%d reason=stateUnavailable probeRetained=true",
+                                tostring(name), tostring(entity.id),
+                                S.immortalityTransitionStateFailures or 0))
+                        end
+                    end
+                elseif engineUnconscious or resetObserved then
                     S.immortalityTransitionWatching = nil
+                    active = active - 1
                     S.immortalityNaturalDowned = true
                     S.immortalityNaturalDownedAt = tnow
                     MS.LogCore(string.format(
-                        "[ImmortalityProbe] engine down observed name=%s id=%s hpPrev=%s hp=%s resetObserved=%s targetIsUnconscious=%s dead=%s stateReadOk=%s",
+                        "[ImmortalityProbe] engine down observed name=%s id=%s hpPrev=%s hp=%s resetObserved=%s targetIsUnconscious=%s dead=%s ageS=%.2f stateReadOk=%s",
                         tostring(name), tostring(entity.id), tostring(hpPrev),
                         tostring(hp), tostring(resetObserved),
                         tostring(finisher.unconscious), tostring(isDead),
+                        age,
                         tostring(okHP)))
                     ScheduleImmortalityProbeRelease(entity, S, cfg, name,
                         "engineDown")
-                elseif S.immortalityTransitionStartedAt and timeout > 0 and
-                        (tnow - S.immortalityTransitionStartedAt) >= timeout then
+                elseif recoveredConscious then
                     S.immortalityTransitionWatching = nil
+                    active = active - 1
                     MS.LogCore(string.format(
-                        "[ImmortalityProbe] natural fall watch timeout name=%s id=%s hp=%s targetIsUnconscious=%s probeRetained=true",
+                        "[ImmortalityProbe] protection safely cancelled name=%s id=%s hp=%s stableS=%.2f ageS=%.2f reason=recoveredConscious",
                         tostring(name), tostring(entity.id), tostring(hp),
+                        inactiveFor, age))
+                    RemoveImmortalityProbe(entity, S, cfg, name,
+                        "recoveredConscious")
+                elseif stateUnavailable then
+                    S.immortalityTransitionWatching = nil
+                    active = active - 1
+                    MS.LogCore(string.format(
+                        "[ImmortalityProbe] protection cleanup name=%s id=%s failures=%d reason=stateUnavailable",
+                        tostring(name), tostring(entity.id),
+                        S.immortalityTransitionStateFailures or 0))
+                    RemoveImmortalityProbe(entity, S, cfg, name,
+                        "stateUnavailable")
+                elseif absoluteTimedOut then
+                    S.immortalityTransitionWatching = nil
+                    active = active - 1
+                    if hp ~= nil and hp <= timeoutFallbackHp then
+                        MS.LogCore(string.format(
+                            "[ImmortalityProbe] protection absolute timeout fallback name=%s id=%s hp=%s inactiveS=%.2f ageS=%.2f fallbackHp=%s targetIsUnconscious=%s",
+                            tostring(name), tostring(entity.id), tostring(hp),
+                            inactiveFor, age, tostring(timeoutFallbackHp),
+                            tostring(finisher.unconscious)))
+                        ScheduleImmortalityProbeRelease(entity, S, cfg, name,
+                            "absoluteTimeoutFallback")
+                    else
+                        MS.LogCore(string.format(
+                            "[ImmortalityProbe] protection absolute timeout cleanup name=%s id=%s hp=%s inactiveS=%.2f ageS=%.2f fallback=false",
+                            tostring(name), tostring(entity.id), tostring(hp),
+                            inactiveFor, age))
+                        RemoveImmortalityProbe(entity, S, cfg, name,
+                            "absoluteTimeoutConscious")
+                    end
+                elseif timedOut and hp ~= nil and hp <= timeoutFallbackHp then
+                    S.immortalityTransitionWatching = nil
+                    active = active - 1
+                    MS.LogCore(string.format(
+                        "[ImmortalityProbe] protection inactivity fallback name=%s id=%s hp=%s inactiveS=%.2f ageS=%.2f fallbackHp=%s targetIsUnconscious=%s",
+                        tostring(name), tostring(entity.id), tostring(hp),
+                        inactiveFor, age, tostring(timeoutFallbackHp),
                         tostring(finisher.unconscious)))
+                    ScheduleImmortalityProbeRelease(entity, S, cfg, name,
+                        "inactivityFallback")
+                elseif timedOut and not
+                        S.immortalityTransitionInactivityLogged then
+                    S.immortalityTransitionInactivityLogged = true
+                    MS.LogCore(string.format(
+                        "[ImmortalityProbe] protection retained name=%s id=%s hp=%s inactiveS=%.2f ageS=%.2f fallbackHp=%s recoveryHp=%s reason=woundedConsciousWaiting",
+                        tostring(name), tostring(entity.id), tostring(hp),
+                        inactiveFor, age, tostring(timeoutFallbackHp),
+                        tostring(safeRecoveryHp)))
                 end
             end
         end
     end
+    return active > 0
 end
 
-local function EnsureTransitionPoller()
-    if not (MS_Poller and MS_Poller.StartNamed) then return false end
-    if MS_Poller._ids and MS_Poller._ids.transition then return true end
+local function StopTransitionPoller(reason)
+    local timerId = MercyStrike._transitionTimerId
+    if timerId then
+        pcall(Script.KillTimer, timerId)
+        MercyStrike._transitionTimerId = nil
+        MS.LogCore("[ImmortalityProbe] transition poller stopped reason=" ..
+            tostring(reason or "idle"))
+    end
+end
+
+EnsureTransitionPoller = function()
+    if MercyStrike._transitionTimerId then return true end
+    if not (Script and type(Script.SetTimer) == "function") then return false end
+
+    -- Stop a transition channel left by an older hot-reloaded build.
+    if MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("transition")
+    end
+
     local interval = tonumber(MS.config and
         MS.config.immortalityProbeTransitionPollMs) or 100
-    MS_Poller.StartNamed("transition", interval, TransitionTick, true)
+    local generation = SessionGeneration()
+    local function tick()
+        if not SessionIsCurrent(generation) then return end
+        MercyStrike._transitionTimerId = nil
+        local ok, hasActive = xpcall(TransitionTick, debug.traceback)
+        if not ok then
+            MS.LogCore("[ImmortalityProbe] transition poller error: " ..
+                tostring(hasActive))
+            return
+        end
+        if hasActive and SessionIsCurrent(generation) then
+            MercyStrike._transitionTimerId =
+                Script.SetTimer(interval, tick)
+        else
+            MS.LogCore(
+                "[ImmortalityProbe] transition poller stopped reason=idle")
+        end
+    end
+
+    local ok, hasActive = xpcall(TransitionTick, debug.traceback)
+    if not ok then
+        MS.LogCore("[ImmortalityProbe] transition poller start error: " ..
+            tostring(hasActive))
+        return false
+    end
+    if not hasActive then return false end
+    MercyStrike._transitionTimerId = Script.SetTimer(interval, tick)
+    MS.LogCore("[ImmortalityProbe] transition poller started (" ..
+        tostring(interval) .. " ms)")
     return true
 end
 
-local function WatchNaturalFall(entity, S, cfg, name, hp)
+WatchNaturalFall = function(entity, S, cfg, name, hp)
     if not (entity and S and S.immortalityProbeApplied) then return false end
     if S.immortalityTransitionWatching or S.immortalityNaturalDowned then
         return true
@@ -479,13 +981,18 @@ local function WatchNaturalFall(entity, S, cfg, name, hp)
     S.immortalityTransitionEntity = entity
     S.immortalityTransitionName = name
     S.immortalityTransitionStartedAt = nowSec()
+    S.immortalityTransitionLastHpChangeAt =
+        S.immortalityTransitionStartedAt
     S.immortalityTransitionHpPrev = hp
+    S.immortalityTransitionStateFailures = 0
+    S.immortalityTransitionInactivityLogged = nil
     S.immortalityProbeKOReadyAt = nil
     S.immortalityProbeKOScheduledHp = nil
     MS.LogCore(string.format(
-        "[ImmortalityProbe] natural fall watch started name=%s id=%s hp=%s timeoutS=%s",
+        "[ImmortalityProbe] natural fall watch started name=%s id=%s hp=%s inactivityTimeoutS=%s absoluteTimeoutS=%s",
         tostring(name), tostring(entity.id), tostring(hp),
-        tostring(cfg.immortalityProbeTransitionWatchTimeoutS or 20)))
+        tostring(cfg.immortalityProbeTransitionWatchTimeoutS or 20),
+        tostring(cfg.immortalityProbeTransitionAbsoluteTimeoutS or 90)))
     return EnsureTransitionPoller()
 end
 
@@ -829,7 +1336,11 @@ local function DeathLikeKO(e, name, S, hpPrev, hp, cfg, tnow, isBoss, stat)
                             "[ImmortalityProbe] deathLike KO scheduled name=%s hp=%.4f delayMs=%d probeProtected=%s",
                             name, hp or -1, delay, tostring(probeDelay)))
 
+                        local sessionGeneration = SessionGeneration()
                         Script.SetTimer(delay, function()
+                            if not SessionIsCurrent(sessionGeneration) then
+                                return
+                            end
                             local applied = false
                             if MS_Unconscious and MS_Unconscious.Apply then
                                 local okA, resA = pcall(MS_Unconscious.Apply, e,
@@ -1418,7 +1929,9 @@ local function WorldTick()
     -- not in combat
     if combatActive and (not inCombat) and (not MercyStrike._combatEndTimer) then
         MS.LogCore("combat maybe ended → debouncing 3s")
+        local sessionGeneration = SessionGeneration()
         MercyStrike._combatEndTimer = Script.SetTimer(3000, function()
+            if not SessionIsCurrent(sessionGeneration) then return end
             MercyStrike._combatEndTimer = nil
             local still = MS.IsInCombat() -- use the same world detector
             if not still then
@@ -1435,14 +1948,25 @@ end
 -- ------------------------
 function MS.Start()
     local worldMs = tonumber(MS.config and MS.config.pollWorldMs) or 3500
-    MS.LogCore("starting world detector @ " .. tostring(worldMs) .. " ms")
+    MS.LogCore("[Lifecycle] world detector start generation=" ..
+        tostring(SessionGeneration()) .. " intervalMs=" .. tostring(worldMs))
     MS_Poller.StartNamed("world", worldMs, WorldTick, true)
 end
 
 function MS.Stop()
+    MercyStrike._sessionGeneration = SessionGeneration() + 1
     MercyStrike.CleanupImmortalityProbes("MS.Stop")
-    if MS_Poller and MS_Poller.StopNamed then
-        MS_Poller.StopNamed("hitsense") -- add this
+    StopTransitionPoller("MS.Stop")
+    StopMercyGuardPoller("MS.Stop")
+    for _, S in pairs(MercyStrike._per or {}) do
+        if S and S.mercyGuardActive then
+            StopMercyGuard(S, "MS.Stop", nil, nil)
+        end
+    end
+    if MS_Poller and MS_Poller.StopAll then
+        MS_Poller.StopAll()
+    elseif MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("hitsense")
         MS_Poller.StopNamed("combat")
         MS_Poller.StopNamed("transition")
         MS_Poller.StopNamed("world")
@@ -1460,18 +1984,128 @@ function MS.Stop()
     end
 end
 
+local function CountEntries(values)
+    local count = 0
+    for _key, _value in pairs(values or {}) do
+        count = count + 1
+    end
+    return count
+end
+
+function MS.ResetSession(source)
+    source = tostring(source or "unknown")
+    local previousGeneration = SessionGeneration()
+    local clearedEntities = CountEntries(MercyStrike._per)
+
+    -- Invalidate callbacks before touching timer ids or entity state.
+    MercyStrike._sessionGeneration = previousGeneration + 1
+    local generation = SessionGeneration()
+
+    if MercyStrike._combatEndTimer then
+        pcall(Script.KillTimer, MercyStrike._combatEndTimer)
+        MercyStrike._combatEndTimer = nil
+    end
+    StopTransitionPoller("sessionReset")
+    StopMercyGuardPoller("sessionReset")
+    if MS_Poller and MS_Poller.StopAll then
+        MS_Poller.StopAll()
+    elseif MS_Poller and MS_Poller.StopNamed then
+        MS_Poller.StopNamed("hitsense")
+        MS_Poller.StopNamed("combat")
+        MS_Poller.StopNamed("transition")
+        MS_Poller.StopNamed("world")
+    end
+
+    -- Safe for duplicate events; the custom probe buff is non-persistent.
+    if MercyStrike.CleanupImmortalityProbes then
+        MercyStrike.CleanupImmortalityProbes(
+            "sessionResetGeneration" .. tostring(generation))
+    end
+
+    combatActive = false
+    rescanUntil = {}
+    lastDiagnosticError = nil
+    MercyStrike._per = {}
+    MercyStrike._transitionTimerId = nil
+    MercyStrike._mercyGuardTimerId = nil
+
+    if MS.Diagnostics and MS.Diagnostics.ResetSession then
+        RunDiagnostic("resetSession", MS.Diagnostics.ResetSession)
+    end
+    if MS.HitSense then
+        MS.HitSense._running = false
+        MS.HitSense._lifecycleRequested = false
+        MS.HitSense._lifecycleStarted = false
+        MS.HitSense._lifecycleTickObserved = false
+    end
+
+    MS.LogCore(string.format(
+        "[Lifecycle] session reset generation=%d previous=%d source=%s clearedEntities=%d",
+        generation, previousGeneration, source, clearedEntities))
+    MS.Start()
+    return generation
+end
+
+function MS.BindLifecycleEvents(maxTries, delayMs)
+    if MS._lifecycleBound then
+        MS.LogCore("[Lifecycle] listener already bound")
+        return true
+    end
+    maxTries = tonumber(maxTries) or 50
+    delayMs = tonumber(delayMs) or 100
+    MS._lifecycleBindGeneration =
+        (tonumber(MS._lifecycleBindGeneration) or 0) + 1
+    local bindGeneration = MS._lifecycleBindGeneration
+    local tries = 0
+
+    local function attempt()
+        if bindGeneration ~= MS._lifecycleBindGeneration or
+                MS._lifecycleBound then
+            return
+        end
+        tries = tries + 1
+        local available = UIAction and
+            type(UIAction.RegisterEventSystemListener) == "function"
+        if available then
+            local ok, result = pcall(
+                UIAction.RegisterEventSystemListener,
+                MS, "System", "OnGameplayStarted", "OnGameplayStarted")
+            if ok then
+                MS._lifecycleBound = true
+                MS.LogCore(string.format(
+                    "[Lifecycle] listener bound event=OnGameplayStarted attempt=%d result=%s",
+                    tries, tostring(result)))
+                return
+            end
+            MS.LogCore("[Lifecycle] listener bind error attempt=" ..
+                tostring(tries) .. " error=" .. tostring(result))
+        end
+        if tries < maxTries and Script and
+                type(Script.SetTimer) == "function" then
+            Script.SetTimer(delayMs, attempt)
+        else
+            MS.LogCore(string.format(
+                "[Lifecycle] listener unavailable attempts=%d apiAvailable=%s",
+                tries, tostring(available)))
+        end
+    end
+
+    attempt()
+    return MS._lifecycleBound == true
+end
+
 function MS.Bootstrap()
     if MS._booted then return end
     MS._booted = true
     if MS.ReloadConfig then MS.ReloadConfig() end
     MS.LogCore("boot ok v" .. tostring(MS.version))
     math.randomseed(os.time() % 2147483647)
-    MS.Start()
+    MS.ResetSession("Bootstrap")
 end
 
 function MS:OnGameplayStarted()
     MS.LogCore("OnGameplayStarted → (re)start world detector")
-    MS.Start()
+    MS.ResetSession("OnGameplayStarted")
 end
 
 -- Kick off after functions exist

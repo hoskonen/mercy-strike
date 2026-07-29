@@ -399,17 +399,103 @@ function MS.WasRecentlyHitByPlayer(e, windowS)
     return false
 end
 
--- Ensure entity HP is at least (floorNorm * max), floorNorm in [0..1]
--- Raise HP to at least maxHp * floorNorm (0..1). If floorNorm is nil, use config.koFloorNorm.
--- Raise HP to at least maxHp * floorNorm (0..1).
--- If floorNorm is nil, use config.koFloorNorm (or fall back to 0.03).
+-- Raise entity HP to at least maxHp * floorNorm and verify the write.
+-- Returns success, method/details, hpBefore, hpAfter.
 function MS.ClampHealthMin(e, floorNorm)
-    if not (e and e.soul) then return end
+    if not (e and e.soul) then
+        return false, "entityOrSoulUnavailable", nil, nil
+    end
     local s = e.soul
+    local okActor, actor = pcall(function() return e.actor end)
+    if not okActor then actor = nil end
 
-    local okM, maxHp = pcall(function() return s:GetHealthMax() end)
-    local okH, curHp = pcall(function() return s:GetHealth() end)
-    if not (okM and okH and maxHp and curHp) then return end
+    local function callNumber(object, methodName, argument)
+        local okLookup, method = pcall(function()
+            return object and object[methodName]
+        end)
+        if not okLookup or type(method) ~= "function" then return nil end
+        local okCall, value
+        if argument ~= nil then
+            okCall, value = pcall(method, object, argument)
+        else
+            okCall, value = pcall(method, object)
+        end
+        if not okCall then return nil end
+        return tonumber(value)
+    end
+
+    local function readSnapshot()
+        local snapshot = {}
+        snapshot.cur = callNumber(s, "GetHealth")
+        if snapshot.cur ~= nil then
+            snapshot.curSource = "soul.GetHealth"
+        else
+            snapshot.cur = callNumber(s, "GetState", "health")
+            if snapshot.cur ~= nil then
+                snapshot.curSource = "soul.GetState"
+            else
+                snapshot.cur = callNumber(actor, "GetHealth")
+                if snapshot.cur ~= nil then
+                    snapshot.curSource = "actor.GetHealth"
+                end
+            end
+        end
+
+        snapshot.max = callNumber(s, "GetHealthMax")
+        if snapshot.max ~= nil and snapshot.max > 0 then
+            snapshot.maxSource = "soul.GetHealthMax"
+        else
+            snapshot.max = callNumber(actor, "GetMaxHealth")
+            if snapshot.max ~= nil and snapshot.max > 0 then
+                snapshot.maxSource = "actor.GetMaxHealth"
+            else
+                snapshot.max = callNumber(actor, "GetHealthMax")
+                if snapshot.max ~= nil and snapshot.max > 0 then
+                    snapshot.maxSource = "actor.GetHealthMax"
+                else
+                    snapshot.max = nil
+                end
+            end
+        end
+
+        local okNorm, norm = pcall(MS.GetNormalizedHp, e)
+        norm = tonumber(norm)
+        if okNorm and norm ~= nil and norm >= 0 and norm <= 1 then
+            snapshot.norm = norm
+            snapshot.normSource = "MS.GetNormalizedHp"
+        end
+
+        if snapshot.cur == nil and snapshot.max and snapshot.norm then
+            snapshot.cur = snapshot.norm * snapshot.max
+            snapshot.curSource = "inferredFromNormalized"
+        end
+        if not snapshot.max and snapshot.cur ~= nil and snapshot.norm and
+                snapshot.norm > 0.000001 then
+            snapshot.max = snapshot.cur / snapshot.norm
+            snapshot.maxSource = "inferredFromNormalized"
+        end
+        return snapshot
+    end
+
+    local function describe(snapshot)
+        return "cur=" .. tostring(snapshot.curSource or "unavailable") ..
+            ",max=" .. tostring(snapshot.maxSource or "unavailable") ..
+            ",norm=" .. tostring(snapshot.normSource or "unavailable")
+    end
+
+    local before = readSnapshot()
+    local maxHp = before.max
+    local curHp = before.cur
+    if not (tonumber(maxHp) and tonumber(curHp)) then
+        return false, "healthReadUnavailable(" .. describe(before) .. ")",
+            curHp, curHp
+    end
+    maxHp = tonumber(maxHp)
+    curHp = tonumber(curHp)
+    if maxHp <= 0 then
+        return false, "invalidMaxHealth(" .. describe(before) .. ")",
+            curHp, curHp
+    end
 
     local n = floorNorm
     if n == nil then
@@ -418,9 +504,73 @@ function MS.ClampHealthMin(e, floorNorm)
     if n < 0 then n = 0 elseif n > 1 then n = 1 end
 
     local floorAbs = n * maxHp
-    if curHp < floorAbs then
-        pcall(function() s:SetHealth(floorAbs) end)
+    if curHp >= floorAbs then
+        return true, "notNeeded", curHp, curHp
     end
+
+    local tolerance = math.max(0.001, maxHp * 0.0001)
+    local normTolerance = 0.0001
+    local attempts = {}
+
+    local function trySetter(label, object, methodName, stateSetter)
+        local okLookup, method = pcall(function()
+            return object and object[methodName]
+        end)
+        if not okLookup or type(method) ~= "function" then
+            attempts[#attempts + 1] = label .. ":unavailable"
+            return false, nil
+        end
+
+        local okCall, result
+        if stateSetter then
+            okCall, result = pcall(method, object, "health", floorAbs)
+        else
+            okCall, result = pcall(method, object, floorAbs)
+        end
+        if not okCall then
+            attempts[#attempts + 1] =
+                label .. ":error(" .. tostring(result) .. ")"
+            return false, nil
+        end
+
+        local after = readSnapshot()
+        local absVerified = after.cur ~= nil and
+            after.cur >= (floorAbs - tolerance)
+        local normVerified = after.norm ~= nil and
+            after.norm >= (n - normTolerance)
+        if absVerified or normVerified then
+            return true, after, label .. "[" .. describe(after) .. "]"
+        end
+        attempts[#attempts + 1] =
+            label .. ":noEffect(cur=" .. tostring(after.cur) ..
+            ",norm=" .. tostring(after.norm) .. "," .. describe(after) .. ")"
+        return false, after, nil
+    end
+
+    -- KCDUtils uses soul:SetState("health", value) for player health.
+    -- Probe it first for NPCs, then actor.SetHealth, then the old soul method.
+    local success, after, detail = trySetter(
+        "soul.SetState", s, "SetState", true)
+    if success then
+        return true, detail, curHp, after.cur
+    end
+
+    success, after, detail = trySetter(
+        "actor.SetHealth", actor, "SetHealth", false)
+    if success then
+        return true, detail, curHp, after.cur
+    end
+
+    success, after, detail = trySetter(
+        "soul.SetHealth", s, "SetHealth", false)
+    if success then
+        return true, detail, curHp, after.cur
+    end
+
+    local final = readSnapshot()
+    return false, table.concat(attempts, ";") ..
+        "[before:" .. describe(before) .. ";after:" .. describe(final) .. "]",
+        curHp, final.cur
 end
 
 function MS.ClampHealthPostKO(e)

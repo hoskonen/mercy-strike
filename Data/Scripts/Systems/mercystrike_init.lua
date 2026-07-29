@@ -18,7 +18,8 @@ else
     System.LogAlways("[MercyStrike] ERROR: Bootstrap missing")
 end
 
-if UIAction and UIAction.RegisterEventSystemListener then
-    UIAction.RegisterEventSystemListener(MS, "System", "OnGameplayStarted", "OnGameplayStarted")
-    System.LogAlways("[MercyStrike] systems init: registered OnGameplayStarted listener")
+if MS and type(MS.BindLifecycleEvents) == "function" then
+    MS.BindLifecycleEvents(50, 100)
+else
+    System.LogAlways("[MercyStrike] ERROR: lifecycle binder missing")
 end

@@ -30,7 +30,27 @@ local DEFAULT = {
     immortalityProbeObserveNaturalFall = true,
     immortalityProbeTransitionPollMs = 100,
     immortalityProbeTransitionWatchTimeoutS = 20,
+    immortalityProbeTransitionAbsoluteTimeoutS = 90,
+    immortalityProbeSafeRecoveryHp = 0.90,
+    immortalityProbeTimeoutFallbackHp = 0.15,
+    immortalityProbeSafeRecoveryStableS = 5,
+    immortalityProbeStateFailureLimit = 10,
+    immortalityProbeTimeoutFallbackDelayMs = 750,
     immortalityProbeEngineDownSettleMs = 1500,
+    immortalityProbeReleaseStableS = 5,
+    immortalityProbeReleaseMinHp = 0.25,
+    immortalityProbeReleaseAbsoluteTimeoutS = 3,
+
+    -- Keep a released, nearby unconscious NPC alive without blocking finishers.
+    mercyGuardEnabled = true,
+    mercyGuardPollMs = 100,
+    mercyGuardFloorHp = 0.10,
+    mercyGuardTriggerHp = 0.08,
+    mercyGuardClampCooldownMs = 1000,
+    mercyGuardRadiusM = 10,
+    mercyGuardOutsideGraceS = 10,
+    mercyGuardStateFailureLimit = 10,
+    mercyGuardHeartbeatS = 10,
     immortalityProbeReleaseAfterKO = true,
     immortalityProbeReleaseAfterKODelayMs = 1500,
     immortalityProbeReleaseAfterNaturalDown = true,
@@ -55,7 +75,7 @@ local DEFAULT = {
 
     -- KO probability (scales with Warfare)
     hpThreshold            = 0.15,  -- default: 0.15
-    applyBaseChance        = 0.99,  -- 5% at Warfare 0
+    applyBaseChance        = 1.00,  -- deterministic while validating the core pipeline
     applyBonusAtCap        = 0.15,  -- +15% at Warfare cap → total 20% at cap
     skillCap               = 30,    -- Warfare level cap used for scaling
     skillIdWarfare         = "fencing",
