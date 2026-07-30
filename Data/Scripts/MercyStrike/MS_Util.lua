@@ -7,13 +7,6 @@ function MS.GetPlayer()
     return System.GetEntityByName("Henry") or System.GetEntityByName("dude")
 end
 
-function MS.GetEntityWuid(ent)
-    if XGenAIModule and type(XGenAIModule.GetMyWUID) == "function" and ent then
-        local ok, w = pcall(function() return XGenAIModule.GetMyWUID(ent) end)
-        if ok and w then return w end
-    end
-end
-
 function MS.IsCorpse(e)
     if not e then return false end
     if e.IsCorpse and type(e.IsCorpse) == "function" then
@@ -30,101 +23,6 @@ function MS.IsAnimalByName(e)
     local s = string.lower(tostring(nm or ""))
     return (s:find("spawnedanimal_", 1, true) or s:find("dog", 1, true) or s:find("boar", 1, true) or s:find("deer", 1, true) or s:find("hare", 1, true) or s:find("rabbit", 1, true) or s:find("wolf", 1, true)) and
         true or false
-end
-
--- ✅ Clean hostile check: AI.Hostile first; (optional) law status is commented for now
-function MS.GetAIHostility(e, p)
-    local available = AI and type(AI.Hostile) == "function" or false
-    if not available then return false, false, nil, "apiUnavailable" end
-    if not (e and e.id and p and p.id) then
-        return true, false, nil, "missingEntityId"
-    end
-    local ok, value = pcall(AI.Hostile, e.id, p.id)
-    local reason = nil
-    if not ok then reason = "callError" end
-    return true, ok, value, reason
-end
-
-function MS.GetAIFaction(e)
-    local available = AI and type(AI.GetFactionOf) == "function" or false
-    if not available then return false, false, nil, "apiUnavailable" end
-    if not (e and e.id) then return true, false, nil, "missingEntityId" end
-    local ok, value = pcall(AI.GetFactionOf, e.id)
-    local reason = nil
-    if not ok then reason = "callError" end
-    return true, ok, ok and value or nil, reason
-end
-
-function MS.IsHostileToPlayer(e)
-    local p = MS.GetPlayer and MS.GetPlayer()
-    if not (e and p) then return false end
-
-    local cfg = MS.config or {}
-    if cfg.useAIHostile and MS.GetAIHostility then
-        local available, ok, value = MS.GetAIHostility(e, p)
-        if available and ok and (value == true or value == 1) then
-            return true
-        end
-    end
-
-    local ef, pf = nil, nil
-    if e.GetFaction then
-        local ok, v = pcall(e.GetFaction, e); if ok then ef = v end
-    end
-    if p.GetFaction then
-        local ok, v = pcall(p.GetFaction, p); if ok then pf = v end
-    end
-    if ef and pf and ef ~= pf then return true end
-
-    local w = MS.GetEntityWuid and MS.GetEntityWuid(e)
-    if w and RPG and RPG.IsPublicEnemy then
-        local ok, res = pcall(RPG.IsPublicEnemy, w)
-        if ok and res then return true end
-    end
-
-    if e.WasRecentlyDamagedByPlayer and type(e.WasRecentlyDamagedByPlayer) == "function" then
-        local ok, res = pcall(e.WasRecentlyDamagedByPlayer, e, 4.0)
-        if ok and res then return true end
-    end
-
-    local s = e.soul
-    if s and s.IsInCombatDanger and type(s.IsInCombatDanger) == "function" then
-        local ok, v = pcall(s.IsInCombatDanger, s)
-        if ok and (v == true or v == 1) then return true end
-    end
-
-    if MS.IsRecentCombatCandidate and MS.IsRecentCombatCandidate(e) then
-        return true
-    end
-
-    return false
-end
-
-local function dist2(a, b)
-    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
-    return dx * dx + dy * dy + dz * dz
-end
-
-function MS.ScanNearbyOnce(radiusM, maxList)
-    local p = MS.GetPlayer(); if not (p and p.GetWorldPos) then return {} end
-    local pos = p:GetWorldPos()
-    local iter = (System.GetEntitiesInSphere and System.GetEntitiesInSphere(pos, radiusM or 8.0)) or System.GetEntities()
-    if not iter then return {} end
-    local r2 = (radiusM or 8.0) ^ 2
-    local out = {}
-    for i = 1, #iter do
-        local e = iter[i]
-        if e and e.GetWorldPos and e ~= p then
-            local wpos = e:GetWorldPos()
-            local inside = System.GetEntitiesInSphere or (dist2(pos, wpos) <= r2)
-            if inside then out[#out + 1] = { e = e, d2 = dist2(pos, wpos) } end
-        end
-    end
-    table.sort(out, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
-    if maxList and #out > maxList then
-        local trimmed = {}; for i = 1, maxList do trimmed[i] = out[i] end; return trimmed
-    end
-    return out
 end
 
 -- Strong 0..1 health (soul/actor/max fallbacks). Single definition.
@@ -218,7 +116,7 @@ function MS.GetWarfareLevel()
     return 0
 end
 
--- Compute effective KO chance with optional Warfare scaling
+-- Compute effective Mercy Strike chance with optional Warfare scaling
 function MS.GetEffectiveApplyChance()
     local cfg  = MS.config or {}
     local base = tonumber(cfg.applyBaseChance) or 0.05
@@ -246,42 +144,32 @@ end
 -- #ms_show_cfg()    → prints the effective flags
 function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
-    local l = c.logging or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: hpThr=%.2f onlyHostile=%s aiHostile=%s scale=%s base=%.2f max=%.2f combatPollMs=%s | logs core=%s probe=%s apply=%s skip=%s",
-        tonumber(c.hpThreshold or 0.12),
-        tostring(c.onlyHostile),
-        tostring(c.useAIHostile),
+        "[MercyStrike] cfg: scale=%s base=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s",
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
         tonumber(c.applyChanceMax or 0),
-        tostring(c.combatPollMs),
-        tostring(l.core), tostring(l.probe), tostring(l.apply), tostring(l.skip)
+        tonumber(c.candidateDropMin or 0),
+        tonumber(c.candidateMaxDistanceM or 0),
+        tostring(c.combatPollMs)
     ))
 end
 
--- #ms_debug_on() / #ms_debug_off() → quick logging toggles
+-- #ms_debug_on() / #ms_debug_off() → acquisition/filter probes
 function ms_debug_on()
-    local c         = MercyStrike and MercyStrike.config or {}
-    c.logging       = c.logging or {}
-    c.logging.probe = true
-    c.logging.skip  = true
-    c.logging.apply = true
-    System.LogAlways("[MercyStrike] debug logs ON (probe/skip/apply)")
+    local c = MercyStrike and MercyStrike.config or {}
+    c.diagnostics = c.diagnostics or {}
+    c.diagnostics.acquisition = true
+    c.diagnostics.archetypes = true
+    System.LogAlways("[MercyStrike] diagnostic probes ON")
 end
 
 function ms_debug_off()
-    local c         = MercyStrike and MercyStrike.config or {}
-    c.logging       = c.logging or {}
-    c.logging.probe = false
-    c.logging.skip  = false
-    System.LogAlways("[MercyStrike] debug logs OFF (core/apply kept)")
-end
-
--- #ms_set_hpthr(0.85) etc. → quick in-session tuning
-function ms_set_hpthr(x)
-    local c = MercyStrike and MercyStrike.config or {}; c.hpThreshold = tonumber(x) or c.hpThreshold
-    System.LogAlways("[MercyStrike] hpThreshold=" .. tostring(c.hpThreshold))
+    local c = MercyStrike and MercyStrike.config or {}
+    c.diagnostics = c.diagnostics or {}
+    c.diagnostics.acquisition = false
+    c.diagnostics.archetypes = false
+    System.LogAlways("[MercyStrike] diagnostic probes OFF")
 end
 
 function ms_set_static(p)
@@ -297,106 +185,8 @@ function ms_set_scaled()
     System.LogAlways("[MercyStrike] scaled mode (warfare)")
 end
 
-local function pid(e) return e and e.id or e end -- normalize key
-
-function MercyStrike.TrackHp(e, hpNow)
-    local k = pid(e); if not k then return nil, nil end
-    local S = MercyStrike._per[k] or {}
-    local hpPrev = S.hpPrev
-    S.hpPrev = hpNow
-    MercyStrike._per[k] = S
-    return hpPrev, hpNow
-end
-
--- Optional UH -> MercyStrike bridge (call this from UH if you have it)
-function MS_RecordHit(targetId, attackerId)
-    local k = pid(targetId); if not k then return end
-    local S = MercyStrike._per[k] or {}
-    S.lastHitBy = attackerId
-    S.lastHitAt = (System and System.GetCurrTime and System.GetCurrTime()) or os.clock()
-    MercyStrike._per[k] = S
-end
-
 function MercyStrike.NowTime()
     return (System and System.GetCurrTime and System.GetCurrTime()) or os.clock()
-end
-
-function MercyStrike.IsRecentCombatCandidate(e)
-    if not (e and e.id) then return false end
-    local S = MercyStrike._per and MercyStrike._per[e.id]
-    if S and S.immortalityProbeApplied then return true end
-    if not (S and S.candidateUntil) then return false end
-    local tnow = nil
-    if MercyStrike.NowTime then
-        local ok, value = pcall(MercyStrike.NowTime)
-        if ok then tnow = tonumber(value) end
-    end
-    if not tnow then tnow = tonumber(os.clock()) or 0 end
-    return tnow <= S.candidateUntil
-end
-
--- Exported API: returns true iff we believe the *player* landed the recent hit
-function MercyStrike.IsRecentPlayerHit(e, player, windowS)
-    if not e then return false end
-    local S = MercyStrike._per and MercyStrike._per[e.id]
-    if not S then return false end
-
-    local wnd = tonumber(windowS) or 1.0
-    if wnd > 2.0 then wnd = 2.0 end
-    local tnow = (MercyStrike.NowTime and MercyStrike.NowTime()) or os.clock()
-
-    -- 1) Prefer stamped ownership (from MS_HitSense)
-    if S.lastHitBy and player and S.lastHitBy == player.id
-        and S.lastHitAt and (tnow - S.lastHitAt) <= wnd then
-        return true
-    end
-
-    -- 2) Heuristic path: significant *instant* HP drop while in melee range
-    --    (hpPrev set only after we’ve processed target at least once)
-    local hpPrev = S.hpPrev
-    local hpNow  = S.hpNow
-    if not hpPrev or not hpNow then
-        return false
-    end
-
-    -- Only measure “big hit” when we were above threshold before the hit
-    local thr  = (MercyStrike.config and MercyStrike.config.hpThreshold) or 0.12
-    local drop = 0
-    if hpPrev > thr then
-        drop = hpPrev - hpNow -- normalized (0..1)
-        if drop < 0 then drop = 0 end
-    end
-
-    -- Distance check (melee lunge friendly)
-    local close = false
-    if player and player.GetWorldPos and e.GetWorldPos then
-        local p, q = { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 }
-        pcall(player.GetWorldPos, player, p)
-        pcall(e.GetWorldPos, e, q)
-        local dx, dy, dz = p.x - q.x, p.y - q.y, p.z - q.z
-        close = (dx * dx + dy * dy + dz * dz) <= (3.6 * 3.6) -- ≈ 3.6 m
-    end
-
-    -- Consider ≥10% (0.10) normalized drop while close as "your hit"
-    if close and drop >= 0.10 then
-        return true
-    end
-
-    return false
-end
-
--- Stamp-only ownership (no heuristics)
-function MS.WasRecentlyHitByPlayer(e, windowS)
-    if not (e and e.id) then return false end
-    local S = MS._per and MS._per[e.id]
-    if not S then return false end
-    local wnd = tonumber(windowS) or 1.0
-    local tnow = (MS.NowTime and MS.NowTime()) or os.clock()
-    if S.lastHitBy and S.lastHitAt and (tnow - S.lastHitAt) <= wnd then
-        local p = MS.GetPlayer and MS.GetPlayer()
-        if p and p.id and S.lastHitBy == p.id then return true end
-    end
-    return false
 end
 
 -- Raise entity HP to at least maxHp * floorNorm and verify the write.
@@ -499,7 +289,7 @@ function MS.ClampHealthMin(e, floorNorm)
 
     local n = floorNorm
     if n == nil then
-        n = tonumber(MS.config and MS.config.koFloorNorm) or 0.03
+        n = 0.03
     end
     if n < 0 then n = 0 elseif n > 1 then n = 1 end
 
@@ -573,10 +363,6 @@ function MS.ClampHealthMin(e, floorNorm)
         curHp, final.cur
 end
 
-function MS.ClampHealthPostKO(e)
-    return MS.ClampHealthMin(e) -- delegates to the same floor
-end
-
 -- Boss detection: name patterns (substring, case-insensitive) and optional level gate
 function MS.IsBoss(e)
     local cfg = MS.config and MS.config.boss or {}
@@ -606,30 +392,6 @@ function MS.IsBoss(e)
     end
 
     return false
-end
-
--- Generic actor stat fetch (by id string), returns 0 if missing
-local function _getStatSafe(soul, statId)
-    if not (soul and statId) then return 0 end
-    -- Try common patterns; adapt if your engine exposes another getter
-    if soul.GetStatLevel then
-        local ok, v = pcall(soul.GetStatLevel, soul, statId)
-        if ok and v then return tonumber(v) or 0 end
-    end
-    -- Fallback: try property accessors if any exist in your build
-    return 0
-end
-
-function MS.GetStrengthLevelFromSoul(soul)
-    local cfg = MS.config or {}
-    local id  = cfg.strengthStatId or "strength"
-    return _getStatSafe(soul, id)
-end
-
-function MS.GetPlayerStrength()
-    local p = MS.GetPlayer and MS.GetPlayer()
-    local s = p and p.soul
-    return MS.GetStrengthLevelFromSoul(s)
 end
 
 function MercyStrike.NameMatches(name, patterns)

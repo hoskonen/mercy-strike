@@ -26,8 +26,10 @@ one selection decision for that NPC during the current combat encounter.
 
 > **Development status:** The core natural-down, immortality-release,
 > finisher, lifecycle, and cleanup mechanics have been proven in repeated game
-> tests. The authoritative selection/state-machine refactor is currently being
-> validated at a temporary 100% test probability.
+> tests. Mercy Strike now uses one authoritative candidate and state-machine
+> pipeline; the obsolete experimental KO, rescue, and HitSense paths have been
+> removed. The cleaned core is being regression-tested at a temporary 100%
+> selection probability.
 
 ## Core Systems
 
@@ -41,8 +43,7 @@ drop at close range before becoming a candidate.
 
 Each candidate receives one authoritative probability roll for the current
 combat encounter. Only a selected candidate can receive Mercy Strike's
-temporary protection. Rejected candidates are not modified by fallback or
-legacy KO logic.
+temporary protection. Rejected candidates are not modified by fallback logic.
 
 This decision point is where Warfare scaling, weapon modifiers, and user
 configuration will connect.
@@ -104,6 +105,9 @@ The current development configuration keeps selection probability at 100% so
 the core state sequence can be tested deterministically. Warfare scaling is
 temporarily disabled during this validation phase.
 
+Compact state transitions remain logged by default. Acquisition, archetype,
+and world-tick probes are available as opt-in development diagnostics.
+
 The final configuration is planned to expose:
 
 - Base knockout probability.
@@ -118,8 +122,6 @@ occasional memorable outcomes, not make every NPC unconscious.
 
 ## Planned Features
 
-- Finalize the authoritative state machine and remove obsolete experimental
-  KO paths.
 - Restore Warfare-based knockout probability scaling.
 - Give blunt and heavy weapons, such as maces, a greater knockout influence.
 - Add weapon-aware balancing for other weapon families.

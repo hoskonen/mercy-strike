@@ -21,17 +21,12 @@ function MS_Unconscious.Apply(e, buffId)
     if applied then
         MercyStrike._per = MercyStrike._per or {}
         MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
-        MercyStrike._per[e.id].koApplied = true
+        MercyStrike._per[e.id].unconsciousApplied = true
 
-        -- mark this as the most recent KO
-        MercyStrike.lastKOId = e.id
-
-        -- immediate buffer clamp (prefer koClampOnApplyNorm, fallback to koFloorNorm)
+        -- Immediate buffer for low-health fallback transitions.
         if MS and MS.ClampHealthMin then
-            local n = (MS.config and MS.config.koClampOnApplyNorm) or nil
+            local n = (MS.config and MS.config.unconsciousClampNorm) or 0.06
             MS.ClampHealthMin(e, n)
-        elseif MS and MS.ClampHealthPostKO then
-            MS.ClampHealthPostKO(e)
         end
     end
 
