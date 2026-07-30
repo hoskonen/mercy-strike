@@ -1,5 +1,5 @@
 -- Scripts/MercyStrike/MS_Main.lua  (Lua 5.1)
--- World detector (3.5s) + combat KO poller (500ms)
+-- World detector (1s) + combat KO poller (200ms)
 
 MercyStrike = MercyStrike or { version = "0.2.1" }
 local MS = MercyStrike
@@ -102,10 +102,101 @@ local function IsDogByApiOrName(e, name, cfg)
     return dog
 end
 
-local function IsAnimal(e, cfg)
+local function ArchetypeSummaryAndMatch(value, patterns)
+    local values = {}
+    local seen = {}
+    local matched = false
+    local scanned = 0
+    local maxValues = 16
+    local maxScalars = 64
+
+    local function inspect(v, depth, allowMatch)
+        if scanned >= maxScalars or depth > 3 then return end
+        local kind = type(v)
+        if kind == "string" or kind == "number" or kind == "boolean" then
+            local text = tostring(v)
+            scanned = scanned + 1
+            if #values < maxValues then
+                values[#values + 1] = text
+            end
+            if allowMatch and MS.NameMatches then
+                local okMatch, hit = pcall(MS.NameMatches, text, patterns)
+                if okMatch and hit then matched = true end
+            end
+            return
+        end
+        if kind ~= "table" or seen[v] then return end
+        seen[v] = true
+        for key, nested in pairs(v) do
+            if scanned >= maxScalars then return end
+            inspect(key, depth + 1, false)
+            inspect(nested, depth + 1, true)
+        end
+    end
+
+    local ok = pcall(inspect, value, 0, true)
+    if not ok then return false, "<unreadable>" end
+    local summary = table.concat(values, "|")
+    if summary == "" then summary = "<empty>" end
+    if #summary > 220 then summary = string.sub(summary, 1, 220) end
+    return matched, summary
+end
+
+local function ReadAnimalArchetype(e, cfg)
+    local soul = e and e.soul
+    local available = soul and type(soul.GetArchetype) == "function" or false
+    if not available then return false, false, false, "<unavailable>" end
+
+    local ok, archetype = pcall(soul.GetArchetype, soul)
+    if not ok then return true, false, false, "<callError>" end
+    local patterns = (cfg and cfg.animalArchetypePatterns) or {}
+    local animal, summary = ArchetypeSummaryAndMatch(archetype, patterns)
+    return true, true, animal, summary
+end
+
+local function IsAnimal(e, cfg, name)
     if cfg and cfg.includeAnimals then return false end
-    local okA, isAnimal = pcall(MS.IsAnimalByName, e)
-    return okA and (isAnimal == true) or false
+    if not (e and e.id) then return false end
+
+    MercyStrike._per = MercyStrike._per or {}
+    MercyStrike._per[e.id] = MercyStrike._per[e.id] or {}
+    local S = MercyStrike._per[e.id]
+    local generation = SessionGeneration()
+    if S.animalFilterGeneration == generation then
+        return S.animalFilterResult == true
+    end
+
+    local archetypeAvailable, archetypeOk, archetypeAnimal, archetypeSummary =
+        ReadAnimalArchetype(e, cfg)
+    local directNameAnimal = false
+    if MS.NameMatches then
+        local patterns = (cfg and cfg.animalNamePatterns) or {}
+        local okName, hit = pcall(MS.NameMatches,
+            tostring(name or PrettyName(e)), patterns)
+        directNameAnimal = okName and hit or false
+    end
+    local legacyAnimal = false
+    if MS.IsAnimalByName then
+        local okLegacy, hit = pcall(MS.IsAnimalByName, e)
+        legacyAnimal = okLegacy and hit == true or false
+    end
+
+    local animal = archetypeAnimal or directNameAnimal or legacyAnimal
+    local source = archetypeAnimal and "archetype" or
+        (directNameAnimal and "configuredName" or
+        (legacyAnimal and "legacyName" or "none"))
+    S.animalFilterGeneration = generation
+    S.animalFilterResult = animal
+    S.animalFilterSource = source
+
+    if cfg and cfg.diagnostics and cfg.diagnostics.archetypes == true then
+        MS.LogCore(string.format(
+            "[FilterProbe] archetype generation=%d id=%s name=%s available=%s ok=%s animal=%s source=%s values=%s",
+            generation, tostring(e.id), tostring(name or PrettyName(e)),
+            tostring(archetypeAvailable), tostring(archetypeOk),
+            tostring(animal), source, tostring(archetypeSummary)))
+    end
+    return animal
 end
 
 local function IsHostile(e, cfg, name)
@@ -1337,7 +1428,8 @@ local function ObserveCombatCandidates(list, cfg)
         if entity and entity.id then
             local name = PrettyName(entity)
             local corpseBefore = IsCorpseByApiOrName(entity, name, cfg)
-            local excluded = IsDogByApiOrName(entity, name, cfg) or IsAnimal(entity, cfg)
+            local excluded = IsDogByApiOrName(entity, name, cfg) or
+                IsAnimal(entity, cfg, name)
             if not excluded then
                 local S = EnsurePer(entity)
                 if S.candidateSession ~= session then
@@ -1955,7 +2047,7 @@ local function CombatTick()
         end
 
         -- 3) animal gate
-        if IsAnimal(e, cfg) then
+        if IsAnimal(e, cfg, name) then
             stat.filtered = stat.filtered + 1
             return
         end

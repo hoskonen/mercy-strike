@@ -6,8 +6,10 @@ local DEFAULT = {
     enabled                = true,
 
     -- Name-based filters (additional safety)
-    corpseNamePatterns     = { "corpse" },      -- lowercase substrings that mean "always skip"
+    corpseNamePatterns     = { "corpse", "deadbody", "dead_body", "so_deadbody", "mrtvola" },
     dogNamePatterns        = { "tvez_vorech" }, -- extend if you meet other named dogs
+    animalNamePatterns     = { "spawnedanimal_", "hare", "rabbit", "boar", "deer", "wolf", "horse" },
+    animalArchetypePatterns = { "hare", "rabbit", "dog", "boar", "deer", "wolf", "horse", "cow", "pig", "sheep", "goat", "chicken" },
 
     -- Scan
     scanRadiusM            = 10.0,
@@ -139,6 +141,7 @@ local DEFAULT = {
     -- Compact diagnostics: core experiment transitions remain logged.
     diagnostics            = {
         acquisition = true,
+        archetypes = true,
         entityDetails = false,
         scanSummaries = false,
         worldTicks = false,
