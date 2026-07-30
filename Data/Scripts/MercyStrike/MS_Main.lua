@@ -12,6 +12,8 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Unconscious.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Poller.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Settings.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_ModMenu.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_WeaponClassifier.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_WeaponProbe.lua")
 
 -- ------------------------
 -- State
@@ -1183,6 +1185,16 @@ local function DecideMercyCandidate(entity, S, cfg, name, drop, distance)
             S.immortalityProbeReleasePending or
             S.mercyGuardActive then
         return S.mercyDecisionSelected == true, false
+    end
+
+    if cfg.diagnostics and cfg.diagnostics.weapons == true and
+            MS.WeaponProbe and
+            type(MS.WeaponProbe.LogDecisionSnapshot) == "function" then
+        local okProbe, probeError = pcall(
+            MS.WeaponProbe.LogDecisionSnapshot, entity, name)
+        if not okProbe then
+            MS.LogCore("[WeaponProbe] error: " .. tostring(probeError))
+        end
     end
 
     local chance, warfare = 0, 0

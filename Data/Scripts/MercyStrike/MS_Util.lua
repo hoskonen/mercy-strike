@@ -165,6 +165,7 @@ function ms_debug_on()
     c.diagnostics = c.diagnostics or {}
     c.diagnostics.acquisition = true
     c.diagnostics.archetypes = true
+    c.diagnostics.weapons = true
     System.LogAlways("[MercyStrike] diagnostic probes ON")
 end
 
@@ -173,6 +174,7 @@ function ms_debug_off()
     c.diagnostics = c.diagnostics or {}
     c.diagnostics.acquisition = false
     c.diagnostics.archetypes = false
+    c.diagnostics.weapons = false
     System.LogAlways("[MercyStrike] diagnostic probes OFF")
 end
 

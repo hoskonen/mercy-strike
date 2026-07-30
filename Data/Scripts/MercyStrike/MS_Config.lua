@@ -77,6 +77,7 @@ local DEFAULT = {
     diagnostics            = {
         acquisition = false,
         archetypes = false,
+        weapons = true, -- temporary decision-time weapon feasibility probe
         worldTicks = false,
     },
     logging                = { core = true },

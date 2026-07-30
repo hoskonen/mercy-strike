@@ -141,7 +141,16 @@ health stabilization, release timing, and MercyGuard remain internal safety
 settings and are intentionally not exposed to users.
 
 Compact state transitions remain logged by default. Acquisition, archetype,
-and world-tick probes remain opt-in development diagnostics.
+and world-tick probes remain opt-in development diagnostics. The current
+development branch temporarily logs both equipped hands at each new candidate
+decision. KCD2's runtime item table exposes an equipped item's UUID and
+database name, but not its XML weapon class. The development classifier
+therefore indexes the shipped Class 3 (axe) and Class 5 (mace) UUIDs from the
+game item tables. Unknown IDs remain neutral; add-ons can register new heavy
+weapon UUIDs through `MercyStrike.WeaponClassifier.RegisterHeavyWeapon`.
+This classification is diagnostic only and does not yet alter selection
+probability. The same bounded snapshot can be requested without combat through
+`#ms_probe_weapon()`.
 
 The intended final design is probabilistic: Mercy Strike should create
 occasional memorable outcomes, not make every NPC unconscious.
