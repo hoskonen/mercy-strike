@@ -99,33 +99,59 @@ The current polling layers are:
 - Transition monitoring only while selected NPCs are armed or releasing.
 - MercyGuard monitoring only while released unconscious NPCs need protection.
 
-## Configuration
+## Configuration and Optional Integrations
 
 The current development configuration keeps selection probability at 100% so
 the core state sequence can be tested deterministically. Warfare scaling is
 temporarily disabled during this validation phase.
 
+Mercy Strike always works from the Lua defaults in `MS_Config.lua`. Mod
+Configuration Menu and KCDUtils/LuaDB add controls and persistence without
+becoming gameplay requirements.
+
+| Available integration | Behavior |
+|---|---|
+| None | Lua defaults; full gameplay functionality |
+| Mod Menu only | In-game settings for the current session |
+| KCDUtils/LuaDB only | Persisted settings without an in-game menu |
+| Full stack | In-game settings with persistence |
+
+The initial Mod Menu layout is:
+
+```text
+Mercy Strike Chance
+  Base Mercy Strike Chance       0-100%
+Character Progression
+  Scale With Warfare             On/Off
+  Warfare Bonus at Mastery       0-100%
+```
+
+The base chance is the probability that an eligible NPC receives Mercy
+Strike's one selection decision for the encounter. When Warfare scaling is
+enabled, the configured bonus grows with Henry's Warfare skill and reaches its
+full value at Warfare 30. The bonus uses additive percentage points: a 5% base
+chance with a 15% mastery bonus produces a 20% chance at Warfare 30.
+
+Changes apply to new candidate decisions. With KCDUtils/LuaDB available, the
+complete validated record is saved globally in the `mercystrike` namespace.
+Missing or invalid fields fall back independently to `MS_Config.lua`.
+
+Combat acquisition thresholds, polling intervals, temporary protection,
+health stabilization, release timing, and MercyGuard remain internal safety
+settings and are intentionally not exposed to users.
+
 Compact state transitions remain logged by default. Acquisition, archetype,
-and world-tick probes are available as opt-in development diagnostics.
-
-The final configuration is planned to expose:
-
-- Base knockout probability.
-- Warfare contribution.
-- Weapon-type modifiers.
-- Candidate damage and distance requirements.
-- MercyGuard health, range, and grace behavior.
-- Logging and diagnostic controls.
+and world-tick probes remain opt-in development diagnostics.
 
 The intended final design is probabilistic: Mercy Strike should create
 occasional memorable outcomes, not make every NPC unconscious.
 
 ## Planned Features
 
-- Restore Warfare-based knockout probability scaling.
+- Balance the base chance and Warfare contribution for release gameplay.
 - Give blunt and heavy weapons, such as maces, a greater knockout influence.
 - Add weapon-aware balancing for other weapon families.
-- Add Mod Menu support for user-facing configuration.
+- Refine the Mod Menu wording and layout through in-game testing.
 - Tune selection probability, fall timing, release timing, and MercyGuard for
   release gameplay.
 - Strengthen boss, quest-NPC, civilian, and special-entity safeguards.

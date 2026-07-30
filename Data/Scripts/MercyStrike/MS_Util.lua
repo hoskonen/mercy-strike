@@ -138,6 +138,10 @@ end
 -- #ms_reload_cfg()  → reloads DEFAULT
 function ms_reload_cfg()
     if MercyStrike and MercyStrike.ReloadConfig then MercyStrike.ReloadConfig() end
+    if MercyStrike and MercyStrike.Settings and
+            MercyStrike.Settings.Initialize then
+        MercyStrike.Settings.Initialize(MercyStrike.config)
+    end
     ms_show_cfg()
 end
 

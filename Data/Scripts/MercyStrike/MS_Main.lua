@@ -10,6 +10,8 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Log.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Util.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Unconscious.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_Poller.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_Settings.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_ModMenu.lua")
 
 -- ------------------------
 -- State
@@ -1483,6 +1485,38 @@ local function CountEntries(values)
     return count
 end
 
+local function InitializeOptionalIntegrations()
+    local settingsSource = "defaults"
+    if MS.Settings and type(MS.Settings.Initialize) == "function" then
+        local ok, result, reason =
+            pcall(MS.Settings.Initialize, MS.config)
+        if not ok then
+            MS.LogCore("[Settings] initialize error: " .. tostring(result))
+        elseif result == false and reason ~= "missing" and
+                reason ~= "db unavailable" then
+            MS.LogCore("[Settings] defaults retained reason=" ..
+                tostring(reason))
+        end
+    end
+    if MS.Settings and type(MS.Settings.GetSource) == "function" then
+        local ok, source = pcall(MS.Settings.GetSource)
+        if ok and source then settingsSource = tostring(source) end
+    end
+
+    local menuRegistered = false
+    if MS.ModMenu and type(MS.ModMenu.Register) == "function" then
+        local ok, registered = pcall(MS.ModMenu.Register)
+        menuRegistered = ok and registered == true
+        if not ok then
+            MS.LogCore("[MCM] registration error: " ..
+                tostring(registered))
+        end
+    end
+    MS.LogCore(string.format(
+        "[Integrations] settings=%s mcm=%s",
+        settingsSource, tostring(menuRegistered)))
+end
+
 function MS.ResetSession(source)
     source = tostring(source or "unknown")
     local previousGeneration = SessionGeneration()
@@ -1516,6 +1550,8 @@ function MS.ResetSession(source)
     MercyStrike._per = {}
     MercyStrike._transitionTimerId = nil
     MercyStrike._mercyGuardTimerId = nil
+
+    InitializeOptionalIntegrations()
 
     MS.LogCore(string.format(
         "[Lifecycle] session reset generation=%d previous=%d source=%s clearedEntities=%d",
