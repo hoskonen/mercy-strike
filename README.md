@@ -1,9 +1,147 @@
 # Mercy Strike
 
-## Known limitations
+## Foreword
 
-- An opening attack that both initiates combat and immediately kills an NPC
-  may not be converted. Mercy Strike requires combat to be detected, or the
-  NPC to survive long enough for a damage transition to be observed. The mod
-  intentionally does not run a permanent fast pre-combat poller or broadly
-  pre-arm nearby NPCs.
+Combat in *Kingdom Come: Deliverance II* does not always need to end in an
+immediate death. Mercy Strike is built around a simple idea: selected
+near-lethal combat outcomes should be able to become convincing unconscious
+knockouts while preserving the game's normal mercy-kill interaction. Like in the GOAT KCD1.
+
+The mod aims to work with the engine rather than replace its combat
+presentation. When the conditions are right, an NPC falls through the natural
+engine transition, remains alive and unconscious, and can still be finished by
+the player.
+
+## Overview
+
+Mercy Strike monitors nearby human combatants while the player is in combat.
+A qualifying damage transition makes an NPC a candidate. The mod then makes
+one selection decision for that NPC during the current combat encounter.
+
+- Selected NPCs enter the natural-down pipeline.
+- Rejected NPCs remain completely vanilla.
+- The decision is made only once per NPC per combat encounter.
+- Animals, corpses, and protected boss-like targets are excluded.
+- Fast polling runs only while it is needed.
+
+> **Development status:** The core natural-down, immortality-release,
+> finisher, lifecycle, and cleanup mechanics have been proven in repeated game
+> tests. The authoritative selection/state-machine refactor is currently being
+> validated at a temporary 100% test probability.
+
+## Core Systems
+
+### Combat candidate detection
+
+The mod uses a lightweight world detector while idle and a faster bounded scan
+while combat is active. A nearby human NPC must show a sufficiently large HP
+drop at close range before becoming a candidate.
+
+### One decision per encounter
+
+Each candidate receives one authoritative probability roll for the current
+combat encounter. Only a selected candidate can receive Mercy Strike's
+temporary protection. Rejected candidates are not modified by fallback or
+legacy KO logic.
+
+This decision point is where Warfare scaling, weapon modifiers, and user
+configuration will connect.
+
+### Natural-down transition
+
+A selected candidate receives temporary immortality before a later lethal
+transition. This allows the game engine to process a natural-looking fall
+without immediately turning the NPC into a corpse.
+
+Mercy Strike observes the transition instead of forcing a custom fall
+animation.
+
+### Unconscious state and immortality release
+
+After the engine reports that the NPC is down, Mercy Strike:
+
+1. Secures the unconscious state.
+2. Stabilizes the NPC's health.
+3. Removes temporary immortality.
+4. Verifies that the NPC remains alive and unconscious.
+
+Immortality release uses bounded retries and cleanup paths. Reloading,
+abandoning combat, failed state reads, and conscious wounded NPCs all have
+terminal cleanup behavior.
+
+### MercyGuard and finishers
+
+After immortality is removed, a short-range MercyGuard protects the
+unconscious NPC from delayed bleeding without blocking the vanilla finisher.
+It uses a low health trigger with hysteresis rather than continuously writing
+health.
+
+MercyGuard stops when the NPC:
+
+- Is finished or dies.
+- Is no longer unconscious.
+- Remains outside the configured range and grace period.
+- Becomes unavailable.
+
+Its fast timer stops automatically when no guarded NPCs remain.
+
+### Lifecycle and performance
+
+Gameplay and save-session restarts use generation-based lifecycle handling.
+Old callbacks are invalidated, active temporary immortality is cleaned up, and
+the world detector starts with fresh state.
+
+The current polling layers are:
+
+- Slow world detection while idle.
+- Combat scanning only during combat.
+- Transition monitoring only while selected NPCs are armed or releasing.
+- MercyGuard monitoring only while released unconscious NPCs need protection.
+
+## Configuration
+
+The current development configuration keeps selection probability at 100% so
+the core state sequence can be tested deterministically. Warfare scaling is
+temporarily disabled during this validation phase.
+
+The final configuration is planned to expose:
+
+- Base knockout probability.
+- Warfare contribution.
+- Weapon-type modifiers.
+- Candidate damage and distance requirements.
+- MercyGuard health, range, and grace behavior.
+- Logging and diagnostic controls.
+
+The intended final design is probabilistic: Mercy Strike should create
+occasional memorable outcomes, not make every NPC unconscious.
+
+## Planned Features
+
+- Finalize the authoritative state machine and remove obsolete experimental
+  KO paths.
+- Restore Warfare-based knockout probability scaling.
+- Give blunt and heavy weapons, such as maces, a greater knockout influence.
+- Add weapon-aware balancing for other weapon families.
+- Add Mod Menu support for user-facing configuration.
+- Tune selection probability, fall timing, release timing, and MercyGuard for
+  release gameplay.
+- Strengthen boss, quest-NPC, civilian, and special-entity safeguards.
+- Reduce development logging to compact release diagnostics.
+
+## Known Limitations
+
+- An NPC can die normally if a lethal hit reaches zero HP before Mercy Strike
+  has selected and armed that NPC. This includes an opening attack that starts
+  combat and kills immediately, or a first qualifying observed damage
+  transition that is already lethal. Several rapid attacks can also land before
+  the combat detector acquires the encounter; visible hits are not necessarily
+  observed HP transitions.
+- Mercy Strike intentionally does not run a permanent fast pre-combat poller
+  or broadly pre-arm nearby NPCs. This protects performance and avoids
+  modifying civilians without reliable combat evidence.
+- The current development build uses a 100% selection probability for
+  deterministic testing. Release probability and RPG scaling are not final.
+- Some low-health fallback transitions can look less natural than an
+  engine-detected fall. Animation and timing polish comes after the final
+  selection logic is stable.

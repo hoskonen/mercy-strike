@@ -1,7 +1,7 @@
 -- Scripts/MercyStrike/MS_Config.lua  (Lua 5.1)
 local DEFAULT = {
     -- Polling (ms)
-    pollWorldMs            = 3500, -- slow outer poller (detect combat)
+    pollWorldMs            = 1000, -- cheap outer poller (detect combat promptly)
     combatPollMs           = 200,  -- fast inner poller (in combat)
     enabled                = true,
 
@@ -76,7 +76,7 @@ local DEFAULT = {
     minHpAfterKO           = 0.10, -- normalized floor (10% of max HP)
     minHpAbsolute          = 5,    -- absolute fallback floor (HP points)
 
-    -- KO probability (scales with Warfare)
+    -- Authoritative per-encounter selection probability (scales with Warfare)
     hpThreshold            = 0.15,  -- default: 0.15
     applyBaseChance        = 1.00,  -- deterministic while validating the core pipeline
     applyBonusAtCap        = 0.15,  -- +15% at Warfare cap → total 20% at cap
@@ -138,6 +138,7 @@ local DEFAULT = {
 
     -- Compact diagnostics: core experiment transitions remain logged.
     diagnostics            = {
+        acquisition = true,
         entityDetails = false,
         scanSummaries = false,
         worldTicks = false,

@@ -270,6 +270,21 @@ local EnsureTransitionPoller
 local StartMercyGuard
 local StopMercyGuardPoller
 
+local function SetMercyState(entity, S, name, newState, reason)
+    if not S then return end
+    newState = tostring(newState or "unknown")
+    local previous = tostring(S.mercyState or "none")
+    if previous == newState and S.mercyStateReason == reason then return end
+    S.mercyState = newState
+    S.mercyStateReason = tostring(reason or "unspecified")
+    S.mercyStateChangedAt = nowSec()
+    MS.LogCore(string.format(
+        "[MercyState] generation=%d candidateSession=%s id=%s name=%s from=%s to=%s reason=%s",
+        SessionGeneration(), tostring(S.mercyDecisionSession),
+        tostring(entity and entity.id), tostring(name or "<entity>"),
+        previous, newState, tostring(reason or "unspecified")))
+end
+
 local function ImmortalityProbeState(S)
     if not S then return "none" end
     if S.immortalityProbeReleasePending then return "releasePending" end
@@ -309,6 +324,7 @@ local function ApplyImmortalityProbe(entity, S, cfg, name)
         S.immortalityProbeAppliedAt = nowSec()
         S.immortalityProbeAppliedGeneration = SessionGeneration()
         S.immortalityProbeReleaseAttempts = 0
+        SetMercyState(entity, S, name, "armed", "immortalityApplied")
     end
     MS.LogCore(string.format(
         "[ImmortalityProbe] add generation=%d name=%s id=%s buff=%s available=true ok=%s result=%s",
@@ -338,16 +354,19 @@ local function RemoveImmortalityProbe(entity, S, cfg, name, reason)
     local age = S.immortalityProbeAppliedAt and
         math.max(0, tnow - S.immortalityProbeAppliedAt) or nil
     local state = ImmortalityProbeState(S)
+    if not tostring(reason or ""):find("StableRelease", 1, true) then
+        SetMercyState(entity, S, name, "terminal", reason)
+    end
     MS.LogCore(string.format(
         "[ImmortalityProbe] remove name=%s id=%s buff=%s reason=%s available=%s ok=%s result=%s",
         tostring(name or "<entity>"), tostring(entity and entity.id), guid,
         tostring(reason), tostring(available), tostring(callOk),
         tostring(result)))
     MS.LogCore(string.format(
-        "[ProbeAudit] terminal generation=%d armedGeneration=%s name=%s id=%s state=%s reason=%s ageS=%s removeAvailable=%s removeCallOk=%s",
+        "[ProbeAudit] terminal generation=%d armedGeneration=%s name=%s id=%s state=%s mercyState=%s reason=%s ageS=%s removeAvailable=%s removeCallOk=%s",
         SessionGeneration(), tostring(S.immortalityProbeAppliedGeneration),
         tostring(name or "<entity>"), tostring(entity and entity.id),
-        state, tostring(reason),
+        state, tostring(S.mercyState), tostring(reason),
         age and string.format("%.2f", age) or "unavailable",
         tostring(available), tostring(callOk)))
     S.immortalityProbeApplied = nil
@@ -401,6 +420,8 @@ local function StopMercyGuard(S, reason, hp, distance)
     local entity = S.mercyGuardEntity
     local name = S.mercyGuardName or PrettyName(entity)
     local clamps = S.mercyGuardClampCount or 0
+    SetMercyState(entity, S, name, "terminal",
+        "guard:" .. tostring(reason))
     ClearMercyGuardState(S)
     MS.LogCore(string.format(
         "[MercyGuard] stopped name=%s id=%s reason=%s hp=%s distanceM=%s clamps=%d",
@@ -584,6 +605,7 @@ StartMercyGuard = function(entity, S, cfg, name, hp)
     S.mercyGuardClampCount = 0
     S.mercyGuardLastClampAt = nil
     S.mercyGuardLastHeartbeatAt = nowSec()
+    SetMercyState(entity, S, name, "guarded", "mercyGuardStarted")
     MS.LogCore(string.format(
         "[MercyGuard] started name=%s id=%s hp=%s trigger=%s floor=%s pollMs=%s clampCooldownMs=%s radiusM=%s outsideGraceS=%s",
         tostring(name), tostring(entity.id), tostring(hp),
@@ -642,6 +664,13 @@ local function CompleteImmortalityProbeRelease(entity, S, cfg, name, reason)
     local okClamped, hpClamped, deadClamped = ReadHpNormalized(entity)
     local removed = RemoveImmortalityProbe(entity, S, cfg, name,
         trigger .. "StableRelease")
+    if removed then
+        SetMercyState(entity, S, name, "released",
+            trigger .. "StableRelease")
+    else
+        SetMercyState(entity, S, name, "terminal",
+            trigger .. "RemovalFailed")
+    end
     S.immortalityProbeReleasedForFinisher = removed and true or false
     S.immortalityProbeReleasedEntity = entity
     S.immortalityProbeReleasedName = name
@@ -708,6 +737,7 @@ local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger,
 
     if delay < 0 then delay = 0 end
     S.immortalityProbeReleaseScheduled = true
+    SetMercyState(entity, S, name, "releaseScheduled", trigger)
     local sessionGeneration = SessionGeneration()
     MS.LogCore(string.format(
         "[ImmortalityProbe] release scheduled generation=%d name=%s id=%s trigger=%s delayMs=%d koApplied=%s",
@@ -782,6 +812,7 @@ local function ScheduleImmortalityProbeRelease(entity, S, cfg, name, trigger,
         S.immortalityTransitionLastHpChangeAt = startedAt
         S.immortalityTransitionHpPrev = hpBefore
         S.immortalityTransitionStateFailures = 0
+        SetMercyState(entity, S, name, "releasing", trigger)
         MS.LogCore(string.format(
             "[ImmortalityProbe] release stabilization started name=%s id=%s trigger=%s unconsciousPreexisting=%s unconsciousAdded=%s hp=%s dead=%s corpse=%s stableTargetS=%s absoluteTimeoutS=%s releaseMinHp=%s stateReadOk=%s",
             tostring(name), tostring(entity.id), trigger,
@@ -917,6 +948,8 @@ local function TransitionTick()
                     active = active - 1
                     S.immortalityNaturalDowned = true
                     S.immortalityNaturalDownedAt = tnow
+                    SetMercyState(entity, S, name, "downed",
+                        "engineDownObserved")
                     MS.LogCore(string.format(
                         "[ImmortalityProbe] engine down observed name=%s id=%s hpPrev=%s hp=%s resetObserved=%s targetIsUnconscious=%s dead=%s ageS=%.2f stateReadOk=%s",
                         tostring(name), tostring(entity.id), tostring(hpPrev),
@@ -1218,6 +1251,75 @@ local function MonitorRetainedImmortalityProbes()
     end
 end
 
+local function ResetMercyDecisionForSession(S, session)
+    if not S or S.mercyDecisionSession == session then return end
+    local active = S.immortalityProbeApplied or
+        S.immortalityProbeReleaseScheduled or
+        S.immortalityProbeReleasePending or
+        S.mercyGuardActive
+    if active then return end
+    S.mercyDecisionSession = nil
+    S.mercyDecisionSelected = nil
+    S.mercyDecisionChance = nil
+    S.mercyDecisionRoll = nil
+    S.mercyDecisionWarfare = nil
+    S.mercyDecisionReason = nil
+    S.mercyState = nil
+    S.mercyStateReason = nil
+    S.mercyStateChangedAt = nil
+end
+
+local function DecideMercyCandidate(entity, S, cfg, name, drop, distance)
+    local session = MS._candidateSession or 0
+    ResetMercyDecisionForSession(S, session)
+    if S.mercyDecisionSession == session then
+        return S.mercyDecisionSelected == true, false
+    end
+    if S.immortalityProbeApplied or
+            S.immortalityProbeReleaseScheduled or
+            S.immortalityProbeReleasePending or
+            S.mercyGuardActive then
+        return S.mercyDecisionSelected == true, false
+    end
+
+    local chance, warfare = 0, 0
+    if MS.GetEffectiveApplyChance then
+        local okChance, value, level =
+            pcall(MS.GetEffectiveApplyChance)
+        if okChance then
+            chance = tonumber(value) or 0
+            warfare = tonumber(level) or 0
+        end
+    end
+    if chance < 0 then chance = 0 elseif chance > 1 then chance = 1 end
+
+    local blockedReason = nil
+    if cfg.boss and cfg.boss.blockDeathLike and MS.IsBoss then
+        local okBoss, isBoss = pcall(MS.IsBoss, entity)
+        if okBoss and isBoss then blockedReason = "bossBlocked" end
+    end
+
+    local roll = math.random()
+    local selected = blockedReason == nil and roll < chance
+    local reason = blockedReason or
+        (selected and "probabilitySelected" or "probabilityRejected")
+    S.mercyDecisionSession = session
+    S.mercyDecisionSelected = selected
+    S.mercyDecisionChance = chance
+    S.mercyDecisionRoll = roll
+    S.mercyDecisionWarfare = warfare
+    S.mercyDecisionReason = reason
+    SetMercyState(entity, S, name,
+        selected and "selected" or "rejected", reason)
+    MS.LogCore(string.format(
+        "[MercyDecision] generation=%d candidateSession=%d id=%s name=%s selected=%s chance=%.4f roll=%.4f warfare=%s drop=%.4f distanceM=%.2f reason=%s",
+        SessionGeneration(), session, tostring(entity and entity.id),
+        tostring(name), tostring(selected), chance, roll,
+        tostring(warfare), tonumber(drop) or 0,
+        tonumber(distance) or -1, reason))
+    return selected, true
+end
+
 local function ObserveCombatCandidates(list, cfg)
     if type(list) ~= "table" then return end
     local okPlayer, player = false, nil
@@ -1240,7 +1342,9 @@ local function ObserveCombatCandidates(list, cfg)
                 local S = EnsurePer(entity)
                 if S.candidateSession ~= session then
                     S.candidateSession = session
+                    ResetMercyDecisionForSession(S, session)
                     S.discoveryHpPrev = nil
+                    S.acquisitionFirstLogged = nil
                     S.candidatePending = nil
                     S.candidateHpPrev = nil
                     S.candidateUntil = nil
@@ -1260,6 +1364,20 @@ local function ObserveCombatCandidates(list, cfg)
                 if okHP and hp ~= nil then
                     local hpPrev = S.discoveryHpPrev
                     S.discoveryHpPrev = hp
+                    local acquisitionDiagnostics = cfg.diagnostics and
+                        cfg.diagnostics.acquisition == true
+                    if acquisitionDiagnostics and
+                            not S.acquisitionFirstLogged then
+                        local distance = DistanceMeters(player, entity)
+                        MS.LogCore(string.format(
+                            "[Acquisition] first generation=%d candidateSession=%d id=%s name=%s hp=%.4f distM=%s corpseBefore=%s",
+                            SessionGeneration(), session,
+                            tostring(entity.id), name, hp,
+                            distance and string.format("%.2f", distance) or
+                                "unavailable",
+                            tostring(corpseBefore)))
+                        S.acquisitionFirstLogged = true
+                    end
                     if S.immortalityProbeApplied and hpPrev ~= nil and
                             not S.immortalityNaturalDowned and
                             cfg.immortalityProbeObserveNaturalFall ~= true then
@@ -1270,6 +1388,8 @@ local function ObserveCombatCandidates(list, cfg)
                         if hpPrev <= fromMax and hp >= toMin and rise >= riseMin then
                             S.immortalityNaturalDowned = true
                             S.immortalityNaturalDownedAt = tnow
+                            SetMercyState(entity, S, name, "downed",
+                                "healthResetObserved")
                             MS.LogCore(string.format(
                                 "[ImmortalityProbe] natural down detected id=%s name=%s hpPrev=%.4f hp=%.4f rise=%.4f",
                                 tostring(entity.id), name, hpPrev, hp, rise))
@@ -1279,6 +1399,17 @@ local function ObserveCombatCandidates(list, cfg)
                     end
                     if hpPrev ~= nil and hp < hpPrev then
                         local drop = hpPrev - hp
+                        if acquisitionDiagnostics and drop < minDrop and
+                                S.mercyDecisionSession ~= session then
+                            local distance = DistanceMeters(player, entity)
+                            MS.LogCore(string.format(
+                                "[Acquisition] preselection drop generation=%d candidateSession=%d id=%s name=%s hpPrev=%.4f hp=%.4f drop=%.4f distM=%s qualifies=false minDrop=%.4f",
+                                SessionGeneration(), session,
+                                tostring(entity.id), name, hpPrev, hp, drop,
+                                distance and string.format("%.2f", distance) or
+                                    "unavailable",
+                                minDrop))
+                        end
                         if drop >= minDrop then
                             local distance = DistanceMeters(player, entity)
                             if distance and distance <= maxDistance then
@@ -1299,10 +1430,26 @@ local function ObserveCombatCandidates(list, cfg)
                                     tostring(entity.id), name, hpPrev, hp, drop, distance, window))
 
                                 if hp > 0 and not corpseBefore then
-                                    ApplyImmortalityProbe(entity, S, cfg, name)
+                                    local selected, isNew =
+                                        DecideMercyCandidate(entity, S, cfg,
+                                            name, drop, distance)
+                                    if selected and isNew then
+                                        local armed = ApplyImmortalityProbe(
+                                            entity, S, cfg, name)
+                                        if not armed then
+                                            SetMercyState(entity, S, name,
+                                                "terminal",
+                                                "immortalityApplyFailed")
+                                        end
+                                    end
                                 end
 
-                                if hp <= 0 and DeathRescueAllowed(entity, cfg) then
+                                if hp <= 0 and
+                                        not (cfg.immortalityProbeEnabled ==
+                                            true and
+                                            cfg.immortalityProbeObserveNaturalFall ==
+                                                true) and
+                                        DeathRescueAllowed(entity, cfg) then
                                     S.zeroRescuePending = true
                                     S.zeroRescueObservedAt = tnow
                                     local rescueFloor = (tonumber(cfg.deathLikeLethalThr) or 0.05) * 0.6
@@ -1851,6 +1998,26 @@ local function CombatTick()
             hpPrev = S.pendingEdgeHpPrev
         end
 
+        -- The natural-down pipeline owns the KO decision. Entities without a
+        -- selected decision remain completely vanilla; legacy edge/grace/
+        -- death-like paths are retained only as a disabled fallback when the
+        -- natural pipeline itself is disabled.
+        local naturalPipeline = cfg.immortalityProbeEnabled == true and
+            cfg.immortalityProbeObserveNaturalFall == true
+        if naturalPipeline then
+            local currentSession = MS._candidateSession or 0
+            local selected = S.mercyDecisionSession == currentSession and
+                S.mercyDecisionSelected == true
+            if not selected or not S.immortalityProbeApplied then
+                S.candidatePending = nil
+                S.candidateHpPrev = nil
+                S.pendingEdgeHpPrev = nil
+                S.pendingEdgeHp = nil
+                S.zeroRescuePending = nil
+                return
+            end
+        end
+
         -- 7) cooldown throttles HEAVY work only
         if cooldownActive(e, tnow) and not zeroRescuePending then return end
 
@@ -1999,6 +2166,8 @@ local function StopCombatPoller()
         MS_Poller.StopNamed("hitsense")
     end
     local audit = {
+        selected = 0,
+        rejected = 0,
         armed = 0,
         retained = 0,
         removed = 0,
@@ -2008,6 +2177,13 @@ local function StopCombatPoller()
         pending = 0,
     }
     for _, S in pairs(MercyStrike._per or {}) do
+        if S and S.mercyDecisionSession == (MS._candidateSession or 0) then
+            if S.mercyDecisionSelected then
+                audit.selected = audit.selected + 1
+            else
+                audit.rejected = audit.rejected + 1
+            end
+        end
         if S and (S.immortalityProbeApplied or S.immortalityProbeAttempted) then
             audit.armed = audit.armed + 1
             local entity = S.immortalityProbeEntity
@@ -2051,10 +2227,10 @@ local function StopCombatPoller()
         end
     end
     MS.LogCore(string.format(
-        "[ProbeAudit] combat end generation=%d armed=%d retained=%d removed=%d removeFailed=%d watching=%d releaseScheduled=%d releasePending=%d",
-        SessionGeneration(), audit.armed, audit.retained, audit.removed,
-        audit.removeFailed, audit.watching, audit.scheduled,
-        audit.pending))
+        "[ProbeAudit] combat end generation=%d candidateSession=%d selected=%d rejected=%d armed=%d retained=%d removed=%d removeFailed=%d watching=%d releaseScheduled=%d releasePending=%d",
+        SessionGeneration(), MS._candidateSession or 0, audit.selected,
+        audit.rejected, audit.armed, audit.retained, audit.removed,
+        audit.removeFailed, audit.watching, audit.scheduled, audit.pending))
     if MS.HitSense and MS.HitSense.LifecycleStopped then
         RunDiagnostic("hitSenseStopped", MS.HitSense.LifecycleStopped,
             "StopCombatPoller")
