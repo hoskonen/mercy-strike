@@ -121,6 +121,8 @@ The initial Mod Menu layout is:
 ```text
 Mercy Strike Chance
   Base Mercy Strike Chance       0-100%
+Weapon Influence
+  Heavy Weapon Bonus             0-100%
 Character Progression
   Scale With Warfare             On/Off
   Warfare Bonus at Mastery       0-100%
@@ -132,6 +134,11 @@ enabled, the configured bonus grows with Henry's Warfare skill and reaches its
 full value at Warfare 30. The bonus uses additive percentage points: a 5% base
 chance with a 15% mastery bonus produces a 20% chance at Warfare 30.
 
+The heavy weapon bonus adds percentage points when Henry has a recognized axe
+or mace in his right hand at the candidate decision. For example, a 5% base
+chance, a current 6% Warfare contribution, and a 15% heavy weapon bonus produce
+a 26% final chance. The complete result is clamped to 100%.
+
 Changes apply to new candidate decisions. With KCDUtils/LuaDB available, the
 complete validated record is saved globally in the `mercystrike` namespace.
 Missing or invalid fields fall back independently to `MS_Config.lua`.
@@ -141,16 +148,30 @@ health stabilization, release timing, and MercyGuard remain internal safety
 settings and are intentionally not exposed to users.
 
 Compact state transitions remain logged by default. Acquisition, archetype,
-and world-tick probes remain opt-in development diagnostics. The current
-development branch temporarily logs both equipped hands at each new candidate
-decision. KCD2's runtime item table exposes an equipped item's UUID and
-database name, but not its XML weapon class. The development classifier
-therefore indexes the shipped Class 3 (axe) and Class 5 (mace) UUIDs from the
-game item tables. Unknown IDs remain neutral; add-ons can register new heavy
-weapon UUIDs through `MercyStrike.WeaponClassifier.RegisterHeavyWeapon`.
-This classification is diagnostic only and does not yet alter selection
-probability. The same bounded snapshot can be requested without combat through
-`#ms_probe_weapon()`.
+and world-tick probes remain opt-in development diagnostics. KCD2's runtime
+item table exposes an equipped item's UUID and database name, but not its XML
+weapon class. Mercy Strike therefore indexes the shipped Class 3 (axe) and
+Class 5 (mace) UUIDs from the game item tables. The right-hand weapon is read
+once when the candidate receives its authoritative probability decision;
+switching weapons afterward does not reroll that NPC.
+
+Unknown IDs remain neutral, preserving compatibility without guessing from
+item names. Add-ons can register new heavy weapon UUIDs through
+`MercyStrike.WeaponClassifier.RegisterHeavyWeapon`. LuaUtils is not required;
+the classifier and chance calculation use the base Lua API. Automatic verbose
+weapon logging is disabled, while the bounded manual snapshot remains
+available through `#ms_probe_weapon()`.
+
+Development console helpers are explicit and never run automatically:
+
+```text
+#ms_dev_give_mace()    Add one full-condition spiked bludgeon for testing
+#ms_dev_give_axe()     Add one full-condition work axe for testing
+#ms_dev_show_chance()  Show the equipped weapon and current chance breakdown
+```
+
+The two give commands intentionally modify Henry's inventory and are intended
+only for controlled development saves.
 
 The intended final design is probabilistic: Mercy Strike should create
 occasional memorable outcomes, not make every NPC unconscious.
@@ -158,7 +179,6 @@ occasional memorable outcomes, not make every NPC unconscious.
 ## Planned Features
 
 - Balance the base chance and Warfare contribution for release gameplay.
-- Give blunt and heavy weapons, such as maces, a greater knockout influence.
 - Add weapon-aware balancing for other weapon families.
 - Refine the Mod Menu wording and layout through in-game testing.
 - Tune selection probability, fall timing, release timing, and MercyGuard for
@@ -179,6 +199,8 @@ occasional memorable outcomes, not make every NPC unconscious.
   modifying civilians without reliable combat evidence.
 - The current development build uses a 100% selection probability for
   deterministic testing. Release probability and RPG scaling are not final.
+- Modded heavy weapons with new UUIDs remain neutral unless their add-on
+  registers the UUID with Mercy Strike's classifier.
 - Some low-health fallback transitions can look less natural than an
   engine-detected fall. Animation and timing polish comes after the final
   selection logic is stable.

@@ -62,6 +62,7 @@ local DEFAULT = {
     skillCap               = 30,    -- Warfare level cap used for scaling
     skillIdWarfare         = "fencing",
     scaleWithWarfare       = false,
+    heavyWeaponBonus       = 0.15,  -- additive chance for Class 3/5 weapons
     applyChanceMax         = 1.00,
 
     -- boss protection
@@ -77,7 +78,6 @@ local DEFAULT = {
     diagnostics            = {
         acquisition = false,
         archetypes = false,
-        weapons = true, -- temporary decision-time weapon feasibility probe
         worldTicks = false,
     },
     logging                = { core = true },

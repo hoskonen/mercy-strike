@@ -4,6 +4,7 @@
 MercyStrike = MercyStrike or {}
 MercyStrike.WeaponClassifier = MercyStrike.WeaponClassifier or {}
 
+local MS = MercyStrike
 local Classifier = MercyStrike.WeaponClassifier
 
 -- Generated from MeleeWeapon records with Class 3 (axe) or Class 5 (mace)
@@ -143,4 +144,92 @@ function Classifier.GetIndexedCount()
     local count = 0
     for _ in pairs(VANILLA_HEAVY) do count = count + 1 end
     return count
+end
+
+local function safeField(object, key)
+    local ok, value = pcall(function()
+        return object and object[key]
+    end)
+    if not ok then return nil end
+    return value
+end
+
+local function firstField(object, keys)
+    for i = 1, #keys do
+        local value = safeField(object, keys[i])
+        if value ~= nil then return value end
+    end
+    return nil
+end
+
+local function itemManagerCall(methodName, argument)
+    local manager = rawget(_G, "ItemManager")
+    local method = safeField(manager, methodName)
+    if type(method) ~= "function" then return false, nil end
+    local ok, result = pcall(method, argument)
+    if not ok then return false, nil end
+    return true, result
+end
+
+-- Read the right-hand item once at the authoritative candidate decision.
+-- The base game API is deliberately used so LuaUtils remains optional.
+function Classifier.GetEquippedWeaponContext(player)
+    local context = {
+        itemId = nil,
+        databaseName = nil,
+        isHeavy = false,
+        family = nil,
+        classificationSource = "noItem",
+        detectionReason = "noItem",
+    }
+
+    if not player and MS.GetPlayer then
+        local okPlayer, value = pcall(MS.GetPlayer)
+        if okPlayer then player = value end
+    end
+    if not player then
+        context.detectionReason = "playerUnavailable"
+        return context
+    end
+
+    local human = safeField(player, "human")
+    local slot = rawget(_G, "HS_RIGHT")
+    local getItemInHand = safeField(human, "GetItemInHand")
+    if type(getItemInHand) ~= "function" or slot == nil then
+        context.detectionReason = "handApiUnavailable"
+        return context
+    end
+
+    local handOk, handle = pcall(getItemInHand, human, slot)
+    if not handOk then
+        context.detectionReason = "handReadFailed"
+        return context
+    end
+    if handle == nil then return context end
+
+    local itemOk, item = itemManagerCall("GetItem", handle)
+    if not itemOk or type(item) ~= "table" then
+        context.detectionReason = "itemReadFailed"
+        return context
+    end
+
+    local rawId = firstField(item, {
+        "classId", "class", "class_id", "Class",
+    })
+    local itemId = normalizeId(rawId)
+    if not itemId then
+        context.detectionReason = "itemIdUnavailable"
+        return context
+    end
+
+    context.itemId = itemId
+    local nameOk, databaseName = itemManagerCall("GetItemName", itemId)
+    if nameOk and databaseName ~= nil and databaseName ~= "" then
+        context.databaseName = tostring(databaseName)
+    end
+
+    context.isHeavy, context.family, context.classificationSource =
+        Classifier.Classify(itemId)
+    context.detectionReason = "detected"
+    return context
 end

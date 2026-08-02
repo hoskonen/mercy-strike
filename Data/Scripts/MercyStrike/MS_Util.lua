@@ -116,23 +116,40 @@ function MS.GetWarfareLevel()
     return 0
 end
 
--- Compute effective Mercy Strike chance with optional Warfare scaling
-function MS.GetEffectiveApplyChance()
+-- Compute the authoritative Mercy Strike chance and its additive components.
+-- weaponContext is snapshotted by the caller at the candidate decision.
+function MS.GetEffectiveApplyChance(weaponContext)
     local cfg  = MS.config or {}
-    local base = tonumber(cfg.applyBaseChance) or 0.05
-    if not cfg.scaleWithWarfare then
-        if cfg.applyChanceMax then base = math.min(base, cfg.applyChanceMax) end
-        return math.max(0, base), 0
+    local base = math.max(0, tonumber(cfg.applyBaseChance) or 0.05)
+    local warfare = 0
+    local warfareBonus = 0
+    if cfg.scaleWithWarfare then
+        local bonusAtCap = math.max(
+            0, tonumber(cfg.applyBonusAtCap) or 0.15)
+        local cap = tonumber(cfg.skillCap) or 30
+        warfare = MS.GetWarfareLevel()
+        local progression = (cap > 0) and
+            math.min(1, math.max(0, warfare / cap)) or 0
+        warfareBonus = progression * bonusAtCap
     end
 
-    local bonus = tonumber(cfg.applyBonusAtCap) or 0.15
-    local cap   = tonumber(cfg.skillCap) or 30
-    local lvl   = MS.GetWarfareLevel()
-    local t     = (cap > 0) and math.min(1, math.max(0, lvl / cap)) or 0
-    local ch    = base + t * bonus
-    local maxC  = tonumber(cfg.applyChanceMax) or 0.99
-    ch          = math.max(0, math.min(ch, maxC))
-    return ch, lvl
+    local heavyBonus = 0
+    if type(weaponContext) == "table" and
+            weaponContext.isHeavy == true then
+        heavyBonus = math.max(
+            0, tonumber(cfg.heavyWeaponBonus) or 0)
+    end
+
+    local rawChance = base + warfareBonus + heavyBonus
+    local maxChance = tonumber(cfg.applyChanceMax) or 1.00
+    local chance = math.max(0, math.min(rawChance, maxChance))
+    return chance, warfare, {
+        baseChance = base,
+        warfareBonus = warfareBonus,
+        heavyWeaponBonus = heavyBonus,
+        rawChance = rawChance,
+        maxChance = maxChance,
+    }
 end
 
 -- #ms_reload_cfg()  → reloads DEFAULT
@@ -149,9 +166,11 @@ end
 function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: scale=%s base=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s",
+        "[MercyStrike] cfg: scale=%s base=%.2f warfareBonus=%.2f heavyBonus=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s",
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
+        tonumber(c.applyBonusAtCap or 0),
+        tonumber(c.heavyWeaponBonus or 0),
         tonumber(c.applyChanceMax or 0),
         tonumber(c.candidateDropMin or 0),
         tonumber(c.candidateMaxDistanceM or 0),
@@ -165,7 +184,6 @@ function ms_debug_on()
     c.diagnostics = c.diagnostics or {}
     c.diagnostics.acquisition = true
     c.diagnostics.archetypes = true
-    c.diagnostics.weapons = true
     System.LogAlways("[MercyStrike] diagnostic probes ON")
 end
 
@@ -174,7 +192,6 @@ function ms_debug_off()
     c.diagnostics = c.diagnostics or {}
     c.diagnostics.acquisition = false
     c.diagnostics.archetypes = false
-    c.diagnostics.weapons = false
     System.LogAlways("[MercyStrike] diagnostic probes OFF")
 end
 

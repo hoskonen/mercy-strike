@@ -73,6 +73,19 @@ function MM.BuildSettings()
 
     MCM.AddCategory(
         MOD_ID,
+        "Weapon Influence",
+        "Let heavy melee weapons make unconscious knockouts more likely."
+    )
+    MCM.AddSlider(
+        MOD_ID,
+        "heavy_weapon_bonus",
+        "Heavy Weapon Bonus",
+        "Additional percentage points when the right-hand weapon is recognized as an axe or mace. Unknown and unsupported modded weapons remain neutral.",
+        0, 100, 1, configPercent(cfg.heavyWeaponBonus), "%"
+    )
+
+    MCM.AddCategory(
+        MOD_ID,
         "Character Progression",
         "Optionally reward Henry's Warfare skill with a higher Mercy Strike chance."
     )
@@ -110,6 +123,10 @@ function MM.OnValueChanged(settingId, value)
         local percent = percentValue(value)
         if percent == nil then return end
         MS.Settings.SetWarfareBonus(percent, "mcm", true)
+    elseif settingId == "heavy_weapon_bonus" then
+        local percent = percentValue(value)
+        if percent == nil then return end
+        MS.Settings.SetHeavyWeaponBonus(percent, "mcm", true)
     else
         return
     end
@@ -173,4 +190,3 @@ function MM.Register()
     end
     return MM._registered
 end
-

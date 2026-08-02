@@ -6,6 +6,7 @@ MercyStrike.Settings = MercyStrike.Settings or {}
 local MS = MercyStrike
 local Settings = MS.Settings
 local DB_NAMESPACE = "mercystrike"
+-- Keep the storage key stable so additive record fields preserve old saves.
 local SETTINGS_KEY = "settings:v1"
 
 local function log(message)
@@ -75,17 +76,21 @@ local function readRecord(db)
         baseChancePercent = normalizePercent(value.baseChancePercent),
         scaleWithWarfare = normalizeBoolean(value.scaleWithWarfare),
         warfareBonusPercent = normalizePercent(value.warfareBonusPercent),
+        heavyWeaponBonusPercent =
+            normalizePercent(value.heavyWeaponBonusPercent),
     }, nil
 end
 
 local function buildRecord(config)
     return {
-        version = 1,
+        version = 2,
         baseChancePercent =
             chanceToPercent(config.applyBaseChance) or 100,
         scaleWithWarfare = config.scaleWithWarfare and 1 or 0,
         warfareBonusPercent =
             chanceToPercent(config.applyBonusAtCap) or 0,
+        heavyWeaponBonusPercent =
+            chanceToPercent(config.heavyWeaponBonus) or 0,
     }
 end
 
@@ -96,6 +101,8 @@ local function recordMatchesConfig(record, config)
         and record.scaleWithWarfare == config.scaleWithWarfare
         and record.warfareBonusPercent ==
             chanceToPercent(config.applyBonusAtCap)
+        and record.heavyWeaponBonusPercent ==
+            chanceToPercent(config.heavyWeaponBonus)
 end
 
 local function applyRecord(config, record)
@@ -107,6 +114,9 @@ local function applyRecord(config, record)
     end
     if record.warfareBonusPercent ~= nil then
         config.applyBonusAtCap = record.warfareBonusPercent / 100
+    end
+    if record.heavyWeaponBonusPercent ~= nil then
+        config.heavyWeaponBonus = record.heavyWeaponBonusPercent / 100
     end
 end
 
@@ -145,10 +155,11 @@ function Settings.Initialize(config)
     Settings._dirty = false
     Settings._source = "luadb"
     log(string.format(
-        "loaded baseChance=%d%% warfareScaling=%s warfareBonus=%d%%",
+        "loaded baseChance=%d%% warfareScaling=%s warfareBonus=%d%% heavyWeaponBonus=%d%%",
         chanceToPercent(config.applyBaseChance) or 0,
         tostring(config.scaleWithWarfare),
-        chanceToPercent(config.applyBonusAtCap) or 0))
+        chanceToPercent(config.applyBonusAtCap) or 0,
+        chanceToPercent(config.heavyWeaponBonus) or 0))
     return true, nil
 end
 
@@ -222,6 +233,19 @@ function Settings.SetWarfareBonus(percent, source, persist)
     MS.config.applyBonusAtCap = percent / 100
     markSessionChanged()
     log(string.format("warfareBonus=%d%% source=%s", percent,
+        tostring(source or "settings")))
+    if persist then return Settings.SaveAll(MS.config) end
+    return true, nil
+end
+
+function Settings.SetHeavyWeaponBonus(percent, source, persist)
+    if type(MS.config) ~= "table" then return false, "config unavailable" end
+    percent = normalizePercent(percent)
+    if percent == nil then return false, "invalid heavy weapon bonus" end
+
+    MS.config.heavyWeaponBonus = percent / 100
+    markSessionChanged()
+    log(string.format("heavyWeaponBonus=%d%% source=%s", percent,
         tostring(source or "settings")))
     if persist then return Settings.SaveAll(MS.config) end
     return true, nil

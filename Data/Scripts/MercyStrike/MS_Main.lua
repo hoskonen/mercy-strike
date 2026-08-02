@@ -14,6 +14,7 @@ Script.ReloadScript("Scripts/MercyStrike/MS_Settings.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_ModMenu.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_WeaponClassifier.lua")
 Script.ReloadScript("Scripts/MercyStrike/MS_WeaponProbe.lua")
+Script.ReloadScript("Scripts/MercyStrike/MS_Dev.lua")
 
 -- ------------------------
 -- State
@@ -1168,6 +1169,14 @@ local function ResetMercyDecisionForSession(S, session)
     S.mercyDecisionChance = nil
     S.mercyDecisionRoll = nil
     S.mercyDecisionWarfare = nil
+    S.mercyDecisionBaseChance = nil
+    S.mercyDecisionWarfareBonus = nil
+    S.mercyDecisionHeavyWeaponBonus = nil
+    S.mercyDecisionWeaponId = nil
+    S.mercyDecisionWeaponName = nil
+    S.mercyDecisionWeaponFamily = nil
+    S.mercyDecisionWeaponSource = nil
+    S.mercyDecisionWeaponDetectionReason = nil
     S.mercyDecisionReason = nil
     S.mercyState = nil
     S.mercyStateReason = nil
@@ -1187,23 +1196,39 @@ local function DecideMercyCandidate(entity, S, cfg, name, drop, distance)
         return S.mercyDecisionSelected == true, false
     end
 
-    if cfg.diagnostics and cfg.diagnostics.weapons == true and
-            MS.WeaponProbe and
-            type(MS.WeaponProbe.LogDecisionSnapshot) == "function" then
-        local okProbe, probeError = pcall(
-            MS.WeaponProbe.LogDecisionSnapshot, entity, name)
-        if not okProbe then
-            MS.LogCore("[WeaponProbe] error: " .. tostring(probeError))
+    local weaponContext = {
+        itemId = nil,
+        databaseName = nil,
+        isHeavy = false,
+        family = nil,
+        classificationSource = "unavailable",
+        detectionReason = "classifierUnavailable",
+    }
+    if MS.WeaponClassifier and
+            type(MS.WeaponClassifier.GetEquippedWeaponContext) ==
+                "function" then
+        local contextOk, context = pcall(
+            MS.WeaponClassifier.GetEquippedWeaponContext)
+        if contextOk and type(context) == "table" then
+            weaponContext = context
+        elseif not contextOk then
+            weaponContext.detectionReason = "classifierError"
         end
     end
 
     local chance, warfare = 0, 0
+    local chanceDetails = {
+        baseChance = tonumber(cfg.applyBaseChance) or 0,
+        warfareBonus = 0,
+        heavyWeaponBonus = 0,
+    }
     if MS.GetEffectiveApplyChance then
-        local okChance, value, level =
-            pcall(MS.GetEffectiveApplyChance)
+        local okChance, value, level, details =
+            pcall(MS.GetEffectiveApplyChance, weaponContext)
         if okChance then
             chance = tonumber(value) or 0
             warfare = tonumber(level) or 0
+            if type(details) == "table" then chanceDetails = details end
         end
     end
     if chance < 0 then chance = 0 elseif chance > 1 then chance = 1 end
@@ -1223,14 +1248,31 @@ local function DecideMercyCandidate(entity, S, cfg, name, drop, distance)
     S.mercyDecisionChance = chance
     S.mercyDecisionRoll = roll
     S.mercyDecisionWarfare = warfare
+    S.mercyDecisionBaseChance =
+        tonumber(chanceDetails.baseChance) or 0
+    S.mercyDecisionWarfareBonus =
+        tonumber(chanceDetails.warfareBonus) or 0
+    S.mercyDecisionHeavyWeaponBonus =
+        tonumber(chanceDetails.heavyWeaponBonus) or 0
+    S.mercyDecisionWeaponId = weaponContext.itemId
+    S.mercyDecisionWeaponName = weaponContext.databaseName
+    S.mercyDecisionWeaponFamily = weaponContext.family
+    S.mercyDecisionWeaponSource = weaponContext.classificationSource
+    S.mercyDecisionWeaponDetectionReason = weaponContext.detectionReason
     S.mercyDecisionReason = reason
     SetMercyState(entity, S, name,
         selected and "selected" or "rejected", reason)
     MS.LogCore(string.format(
-        "[MercyDecision] generation=%d candidateSession=%d id=%s name=%s selected=%s chance=%.4f roll=%.4f warfare=%s drop=%.4f distanceM=%.2f reason=%s",
+        "[MercyDecision] generation=%d candidateSession=%d id=%s name=%s selected=%s chance=%.4f base=%.4f warfareBonus=%.4f heavyBonus=%.4f roll=%.4f warfare=%s weaponId=%s weaponName=%s weaponFamily=%s weaponSource=%s weaponDetection=%s drop=%.4f distanceM=%.2f reason=%s",
         SessionGeneration(), session, tostring(entity and entity.id),
-        tostring(name), tostring(selected), chance, roll,
-        tostring(warfare), tonumber(drop) or 0,
+        tostring(name), tostring(selected), chance,
+        S.mercyDecisionBaseChance, S.mercyDecisionWarfareBonus,
+        S.mercyDecisionHeavyWeaponBonus, roll, tostring(warfare),
+        tostring(weaponContext.itemId),
+        tostring(weaponContext.databaseName),
+        tostring(weaponContext.family),
+        tostring(weaponContext.classificationSource),
+        tostring(weaponContext.detectionReason), tonumber(drop) or 0,
         tonumber(distance) or -1, reason))
     return selected, true
 end
@@ -1358,10 +1400,11 @@ local function StartCombatPoller()
     local ms = tonumber(MS.config and MS.config.combatPollMs) or 200
     local chance, warfare = MS.GetEffectiveApplyChance()
     MS.LogCore(string.format(
-        "combat detected → starting combat poller @%d ms (chance=%.1f%% warfare=%d scaling=%s)",
+        "combat detected → starting combat poller @%d ms (baseProgressionChance=%.1f%% warfare=%d scaling=%s heavyBonus=%.1f%%)",
         ms, (tonumber(chance) or 0) * 100,
         tonumber(warfare) or 0,
-        tostring(MS.config and MS.config.scaleWithWarfare == true)))
+        tostring(MS.config and MS.config.scaleWithWarfare == true),
+        (tonumber(MS.config and MS.config.heavyWeaponBonus) or 0) * 100))
 
     MS_Poller.StartNamed("combat", ms, CombatTick, true)
 end
