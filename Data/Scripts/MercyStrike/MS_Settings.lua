@@ -96,7 +96,7 @@ local function buildRecord(config)
     return {
         version = 2,
         baseChancePercent =
-            chanceToPercent(config.applyBaseChance) or 100,
+            chanceToPercent(config.applyBaseChance) or 5,
         scaleWithWarfare = config.scaleWithWarfare and 1 or 0,
         warfareBonusPercent =
             chanceToPercent(config.applyBonusAtCap) or 0,

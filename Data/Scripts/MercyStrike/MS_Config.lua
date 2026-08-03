@@ -56,13 +56,13 @@ local DEFAULT = {
     naturalDownResetToMin   = 0.90,
     naturalDownResetRiseMin = 0.50,
 
-    -- Authoritative per-encounter selection probability (scales with Warfare)
-    applyBaseChance        = 1.00,  -- deterministic while validating the core pipeline
+    -- Release balance: one authoritative selection roll per NPC/encounter.
+    applyBaseChance        = 0.05,  -- 5% before progression or weapon bonuses
     applyBonusAtCap        = 0.15,  -- +15% at Warfare cap
     skillCap               = 30,    -- Warfare level cap used for scaling
     skillIdWarfare         = "fencing",
-    scaleWithWarfare       = false,
-    heavyWeaponBonus       = 0.15,  -- additive chance for Class 3/5 weapons
+    scaleWithWarfare       = true,
+    heavyWeaponBonus       = 0.15,  -- +15% for recognized Class 3/5 weapons
     applyChanceMax         = 1.00,
 
     -- boss protection

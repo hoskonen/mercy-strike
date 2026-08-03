@@ -27,9 +27,7 @@ one selection decision for that NPC during the current combat encounter.
 > **Development status:** The core natural-down, immortality-release,
 > finisher, lifecycle, and cleanup mechanics have been proven in repeated game
 > tests. Mercy Strike now uses one authoritative candidate and state-machine
-> pipeline; the obsolete experimental KO, rescue, and HitSense paths have been
-> removed. The cleaned core is being regression-tested at a temporary 100%
-> selection probability.
+> pipeline with release-oriented probability defaults.
 
 ## Core Systems
 
@@ -45,8 +43,8 @@ Each candidate receives one authoritative probability roll for the current
 combat encounter. Only a selected candidate can receive Mercy Strike's
 temporary protection. Rejected candidates are not modified by fallback logic.
 
-This decision point is where Warfare scaling, weapon modifiers, and user
-configuration will connect.
+This decision includes Warfare scaling, the equipped heavy-weapon modifier,
+and user configuration.
 
 ### Natural-down transition
 
@@ -99,11 +97,32 @@ The current polling layers are:
 - Transition monitoring only while selected NPCs are armed or releasing.
 - MercyGuard monitoring only while released unconscious NPCs need protection.
 
-## Configuration and Optional Integrations
+## Release Defaults
 
-The current development configuration keeps selection probability at 100% so
-the core state sequence can be tested deterministically. Warfare scaling is
-temporarily disabled during this validation phase.
+Mercy Strike ships with deliberately restrained defaults:
+
+- **Base Mercy Strike chance:** 5%.
+- **Warfare scaling:** enabled.
+- **Warfare bonus at level 30:** +15 percentage points.
+- **Recognized axe or mace bonus:** +15 percentage points.
+
+The chance is rolled once for each eligible NPC during a combat encounter,
+not once per hit. Bonuses are additive, and the final result is capped at
+100%.
+
+| Example | Final chance |
+|---|---:|
+| Sword, Warfare 0 | 5% |
+| Sword, Warfare 6 | 8% |
+| Sword, Warfare 30 | 20% |
+| Axe or mace, Warfare 0 | 20% |
+| Axe or mace, Warfare 30 | 35% |
+
+This keeps Mercy Strikes uncommon with swords while giving heavy weapons a
+clear identity and letting the chance grow naturally with Henry's combat
+experience. All four values can be adjusted through Mod Configuration Menu.
+
+## Configuration and Optional Integrations
 
 Mercy Strike always works from the Lua defaults in `MS_Config.lua`. Mod
 Configuration Menu and KCDUtils/LuaDB add controls and persistence without
@@ -180,16 +199,15 @@ Development console helpers are explicit and never run automatically:
 The two give commands intentionally modify Henry's inventory and are intended
 only for controlled development saves.
 
-The intended final design is probabilistic: Mercy Strike should create
-occasional memorable outcomes, not make every NPC unconscious.
+The design is intentionally probabilistic: Mercy Strike creates occasional
+memorable outcomes rather than making every NPC unconscious.
 
 ## Planned Features
 
-- Balance the base chance and Warfare contribution for release gameplay.
 - Add weapon-aware balancing for other weapon families.
 - Refine the Mod Menu wording and layout through in-game testing.
-- Tune selection probability, fall timing, release timing, and MercyGuard for
-  release gameplay.
+- Continue tuning fall timing, release timing, and MercyGuard through broader
+  gameplay testing.
 - Strengthen boss, quest-NPC, civilian, and special-entity safeguards.
 
 ## Known Limitations
@@ -203,8 +221,6 @@ occasional memorable outcomes, not make every NPC unconscious.
 - Mercy Strike intentionally does not run a permanent fast pre-combat poller
   or broadly pre-arm nearby NPCs. This protects performance and avoids
   modifying civilians without reliable combat evidence.
-- The current development build uses a 100% selection probability for
-  deterministic testing. Release probability and RPG scaling are not final.
 - Modded heavy weapons with new UUIDs remain neutral unless their add-on
   registers the UUID with Mercy Strike's classifier.
 - Some low-health fallback transitions can look less natural than an
