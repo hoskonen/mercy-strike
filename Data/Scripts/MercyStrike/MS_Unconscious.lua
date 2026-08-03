@@ -13,9 +13,15 @@ function MS_Unconscious.Apply(e, buffId)
     -- consistently observable result (matching Cura Equi's proven usage).
     local applied = ok
 
-    if MS and MS.LogCore then
-        MS.LogCore(string.format("[Unconscious] AddBuff id=%s ok=%s result=%s",
-            tostring(buffId), tostring(ok), tostring(res)))
+    if MS then
+        local message = string.format(
+            "[Unconscious] AddBuff id=%s ok=%s result=%s",
+            tostring(buffId), tostring(ok), tostring(res))
+        if ok and MS.LogVerbose then
+            MS.LogVerbose(message)
+        elseif not ok and MS.LogError then
+            MS.LogError(message)
+        end
     end
 
     if applied then

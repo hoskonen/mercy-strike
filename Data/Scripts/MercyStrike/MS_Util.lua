@@ -152,6 +152,31 @@ function MS.GetEffectiveApplyChance(weaponContext)
     }
 end
 
+-- #ms_help() -> list every Mercy Strike console helper.
+function ms_help()
+    local lines = {
+        "Mercy Strike console commands:",
+        "#ms_help() - Show this command list",
+        "#ms_show_cfg() - Show effective settings and logging flags",
+        "#ms_reload_cfg() - Reload Lua defaults, then persisted settings",
+        "#ms_debug_on() - Enable verbose and acquisition diagnostics",
+        "#ms_debug_off() - Restore compact logging",
+        "#ms_set_static(chance) - Use a fixed session chance from 0.0 to 1.0",
+        "#ms_set_scaled() - Enable Warfare scaling for this session",
+        "#ms_probe_weapon() - Print a detailed equipped-weapon snapshot",
+        "#ms_dev_show_chance() - Show weapon and current chance breakdown",
+        "#ms_dev_give_mace() - Add a test spiked bludgeon",
+        "#ms_dev_give_axe() - Add a test work axe",
+    }
+    for i = 1, #lines do
+        if MercyStrike and MercyStrike.LogManual then
+            MercyStrike.LogManual(lines[i])
+        else
+            System.LogAlways("[MercyStrike][Manual] " .. lines[i])
+        end
+    end
+end
+
 -- #ms_reload_cfg()  → reloads DEFAULT
 function ms_reload_cfg()
     if MercyStrike and MercyStrike.ReloadConfig then MercyStrike.ReloadConfig() end
@@ -166,7 +191,7 @@ end
 function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: scale=%s base=%.2f warfareBonus=%.2f heavyBonus=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s",
+        "[MercyStrike] cfg: scale=%s base=%.2f warfareBonus=%.2f heavyBonus=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s loggingCore=%s loggingVerbose=%s loggingIntegrations=%s",
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
         tonumber(c.applyBonusAtCap or 0),
@@ -174,25 +199,32 @@ function ms_show_cfg()
         tonumber(c.applyChanceMax or 0),
         tonumber(c.candidateDropMin or 0),
         tonumber(c.candidateMaxDistanceM or 0),
-        tostring(c.combatPollMs)
+        tostring(c.combatPollMs),
+        tostring(c.logging and c.logging.core),
+        tostring(c.logging and c.logging.verbose),
+        tostring(c.logging and c.logging.integrations)
     ))
 end
 
--- #ms_debug_on() / #ms_debug_off() → acquisition/filter probes
+-- #ms_debug_on() / #ms_debug_off() -> verbose development diagnostics
 function ms_debug_on()
     local c = MercyStrike and MercyStrike.config or {}
+    c.logging = c.logging or {}
     c.diagnostics = c.diagnostics or {}
+    c.logging.verbose = true
     c.diagnostics.acquisition = true
     c.diagnostics.archetypes = true
-    System.LogAlways("[MercyStrike] diagnostic probes ON")
+    System.LogAlways("[MercyStrike] verbose diagnostics ON")
 end
 
 function ms_debug_off()
     local c = MercyStrike and MercyStrike.config or {}
+    c.logging = c.logging or {}
     c.diagnostics = c.diagnostics or {}
+    c.logging.verbose = false
     c.diagnostics.acquisition = false
     c.diagnostics.archetypes = false
-    System.LogAlways("[MercyStrike] diagnostic probes OFF")
+    System.LogAlways("[MercyStrike] verbose diagnostics OFF")
 end
 
 function ms_set_static(p)

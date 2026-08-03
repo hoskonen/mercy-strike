@@ -80,7 +80,11 @@ local DEFAULT = {
         archetypes = false,
         worldTicks = false,
     },
-    logging                = { core = true },
+    logging                = {
+        core = true,
+        verbose = false,
+        integrations = true,
+    },
 }
 
 -- shallow copy (Lua 5.1)
@@ -100,5 +104,7 @@ end
 
 function MercyStrike.ReloadConfig()
     MercyStrike.config = copyTbl(DEFAULT)
-    System.LogAlways("[MercyStrike] config loaded (single file)")
+    if MercyStrike.LogVerbose then
+        MercyStrike.LogVerbose("config loaded (single file)")
+    end
 end

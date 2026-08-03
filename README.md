@@ -147,13 +147,19 @@ Combat acquisition thresholds, polling intervals, temporary protection,
 health stabilization, release timing, and MercyGuard remain internal safety
 settings and are intentionally not exposed to users.
 
-Compact state transitions remain logged by default. Acquisition, archetype,
-and world-tick probes remain opt-in development diagnostics. KCD2's runtime
-item table exposes an equipped item's UUID and database name, but not its XML
-weapon class. Mercy Strike therefore indexes the shipped Class 3 (axe) and
-Class 5 (mace) UUIDs from the game item tables. The right-hand weapon is read
-once when the candidate receives its authoritative probability decision;
-switching weapons afterward does not reroll that NPC.
+Logging is split into compact core, verbose development, and optional-
+integration channels. Core state decisions remain visible by default, while
+poller lifecycle, candidate observations, release detail, health clamps, and
+acquisition probes are quiet. LuaDB and Mod Menu messages use the integration
+channel. Errors and the result of a manually requested console probe are
+always visible. `#ms_debug_on()` enables verbose and acquisition diagnostics
+for the current session; `#ms_debug_off()` restores the compact view.
+
+KCD2's runtime item table exposes an equipped item's UUID and database name,
+but not its XML weapon class. Mercy Strike therefore indexes the shipped
+Class 3 (axe) and Class 5 (mace) UUIDs from the game item tables. The
+right-hand weapon is read once when the candidate receives its authoritative
+probability decision; switching weapons afterward does not reroll that NPC.
 
 Unknown IDs remain neutral, preserving compatibility without guessing from
 item names. Add-ons can register new heavy weapon UUIDs through
@@ -165,6 +171,7 @@ available through `#ms_probe_weapon()`.
 Development console helpers are explicit and never run automatically:
 
 ```text
+#ms_help()             List every Mercy Strike console command
 #ms_dev_give_mace()    Add one full-condition spiked bludgeon for testing
 #ms_dev_give_axe()     Add one full-condition work axe for testing
 #ms_dev_show_chance()  Show the equipped weapon and current chance breakdown
@@ -184,7 +191,6 @@ occasional memorable outcomes, not make every NPC unconscious.
 - Tune selection probability, fall timing, release timing, and MercyGuard for
   release gameplay.
 - Strengthen boss, quest-NPC, civilian, and special-entity safeguards.
-- Reduce development logging to compact release diagnostics.
 
 ## Known Limitations
 

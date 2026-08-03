@@ -10,7 +10,18 @@ local DB_NAMESPACE = "mercystrike"
 local SETTINGS_KEY = "settings:v1"
 
 local function log(message)
-    System.LogAlways("[MercyStrike][Settings] " .. tostring(message))
+    if MS.LogIntegration then
+        MS.LogIntegration("[Settings] " .. tostring(message))
+    end
+end
+
+local function logError(message)
+    if MS.LogError then
+        MS.LogError("[Settings] " .. tostring(message))
+    else
+        System.LogAlways("[MercyStrike][ERROR] [Settings] " ..
+            tostring(message))
+    end
 end
 
 local function normalizeBoolean(value)
@@ -56,7 +67,7 @@ local function ensureDB()
         return db
     end
 
-    log("failed to open LuaDB namespace")
+    logError("failed to open LuaDB namespace")
     return nil
 end
 
@@ -177,14 +188,14 @@ function Settings.SaveAll(config)
     end
     if type(db.SetG) ~= "function" then
         markSessionChanged()
-        log("global save API unavailable")
+        logError("global save API unavailable")
         return false, "global write unavailable"
     end
 
     local writeOk = pcall(db.SetG, db, SETTINGS_KEY, buildRecord(config))
     if not writeOk then
         markSessionChanged()
-        log("save failed")
+        logError("save failed")
         return false, "write failed"
     end
 
@@ -197,7 +208,12 @@ function Settings.SaveAll(config)
     else
         markSessionChanged()
     end
-    log("saved all verified=" .. tostring(verified))
+    if verified then
+        log("saved all verified=true")
+    else
+        logError("saved all verified=false reason=" ..
+            tostring(reason or "verification failed"))
+    end
     return verified, verified and nil or reason or "verification failed"
 end
 

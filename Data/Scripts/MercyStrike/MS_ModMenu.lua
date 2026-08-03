@@ -9,7 +9,18 @@ local MOD_ID = "mercystrike"
 local MOD_NAME = "Mercy Strike"
 
 local function log(message)
-    System.LogAlways("[MercyStrike][MCM] " .. tostring(message))
+    if MS.LogIntegration then
+        MS.LogIntegration("[MCM] " .. tostring(message))
+    end
+end
+
+local function logError(message)
+    if MS.LogError then
+        MS.LogError("[MCM] " .. tostring(message))
+    else
+        System.LogAlways("[MercyStrike][ERROR] [MCM] " ..
+            tostring(message))
+    end
 end
 
 local function toggleValue(value)
@@ -107,7 +118,7 @@ end
 
 function MM.OnValueChanged(settingId, value)
     if not (MS.Settings and MS.Settings.SaveAll) then
-        log("settings module unavailable; change ignored")
+        logError("settings module unavailable; change ignored")
         return
     end
 
@@ -137,12 +148,12 @@ end
 -- Stable closures prevent duplicate or stale callbacks across script reloads.
 MM._buildListener = MM._buildListener or function()
     local ok, err = pcall(MM.BuildSettings)
-    if not ok then log("build failed: " .. tostring(err)) end
+    if not ok then logError("build failed: " .. tostring(err)) end
 end
 
 MM._valueListener = MM._valueListener or function(settingId, value)
     local ok, err = pcall(MM.OnValueChanged, settingId, value)
-    if not ok then log("value change failed: " .. tostring(err)) end
+    if not ok then logError("value change failed: " .. tostring(err)) end
 end
 
 MM._buildRegistered = MM._buildRegistered or MM._registered or false
@@ -163,7 +174,8 @@ function MM.Register()
             MM._buildListener
         )
         if not ok or result == false then
-            log("build-listener registration failed: " .. tostring(result))
+            logError("build-listener registration failed: " ..
+                tostring(result))
             return false
         end
         MM._buildRegistered = true
@@ -176,7 +188,8 @@ function MM.Register()
             MM._valueListener
         )
         if not ok or result == false then
-            log("value-listener registration failed: " .. tostring(result))
+            logError("value-listener registration failed: " ..
+                tostring(result))
             return false
         end
         MM._valueRegistered = true

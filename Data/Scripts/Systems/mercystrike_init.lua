@@ -1,25 +1,35 @@
 -- Scripts/Systems/MercyStrike/MercyStrike_Init.lua
 
-System.LogAlways("[MercyStrike] systems init: loading Scripts/MercyStrike/MS_Main.lua")
-
 -- Log any error thrown while loading
 local ok, err = pcall(function()
     Script.ReloadScript("Scripts/MercyStrike/MS_Main.lua")
 end)
-System.LogAlways("[MercyStrike] Reload MS_Main.lua ok=" .. tostring(ok) .. " err=" .. tostring(err))
 
 local MS = rawget(_G, "MercyStrike")
-System.LogAlways("[MercyStrike] systems init: MS=" .. tostring(MS) ..
-    " Bootstrap=" .. tostring(MS and MS.Bootstrap))
+if not ok then
+    System.LogAlways("[MercyStrike][ERROR] Reload MS_Main.lua failed: " ..
+        tostring(err))
+elseif MS and MS.LogVerbose then
+    MS.LogVerbose("systems init: MS_Main.lua loaded Bootstrap=" ..
+        tostring(MS.Bootstrap))
+end
 
 if MS and type(MS.Bootstrap) == "function" then
     MS.Bootstrap()
 else
-    System.LogAlways("[MercyStrike] ERROR: Bootstrap missing")
+    if MS and MS.LogError then
+        MS.LogError("Bootstrap missing")
+    else
+        System.LogAlways("[MercyStrike][ERROR] Bootstrap missing")
+    end
 end
 
 if MS and type(MS.BindLifecycleEvents) == "function" then
     MS.BindLifecycleEvents(50, 100)
 else
-    System.LogAlways("[MercyStrike] ERROR: lifecycle binder missing")
+    if MS and MS.LogError then
+        MS.LogError("lifecycle binder missing")
+    else
+        System.LogAlways("[MercyStrike][ERROR] lifecycle binder missing")
+    end
 end

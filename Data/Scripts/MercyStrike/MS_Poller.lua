@@ -4,7 +4,19 @@ local P = MS_Poller
 P._ids = P._ids or {}
 P._generations = P._generations or {}
 
-local function Log(s) System.LogAlways("[MercyStrike] " .. tostring(s)) end
+local function logVerbose(message)
+    if MercyStrike and MercyStrike.LogVerbose then
+        MercyStrike.LogVerbose(message)
+    end
+end
+
+local function logError(message)
+    if MercyStrike and MercyStrike.LogError then
+        MercyStrike.LogError(message)
+    else
+        System.LogAlways("[MercyStrike][ERROR] " .. tostring(message))
+    end
+end
 
 -- simple per-channel error dedupe
 local _lastErr = {}
@@ -23,7 +35,7 @@ function P.StartNamed(name, intervalMs, fn, runImmediately)
             if note and note ~= "" then extra = extra .. " (" .. tostring(note) .. ")" end
             if _lastErr[name] ~= (err .. extra) then
                 _lastErr[name] = err .. extra
-                Log("poller[" .. name .. "] runtime error:" .. extra .. "\n" .. tostring(err))
+                logError("poller[" .. name .. "] runtime error:" .. extra .. "\n" .. tostring(err))
             end
         end
         if generation == (P._generations[name] or 0) then
@@ -36,13 +48,13 @@ function P.StartNamed(name, intervalMs, fn, runImmediately)
         if not ok then
             if _lastErr[name] ~= err then
                 _lastErr[name] = err
-                Log("poller[" .. name .. "] immediate error:\n" .. tostring(err))
+                logError("poller[" .. name .. "] immediate error:\n" .. tostring(err))
             end
         end
     end
 
     P._ids[name] = Script.SetTimer(intervalMs, wrapped)
-    Log("poller[" .. name .. "] started (" .. tostring(intervalMs) .. " ms)")
+    logVerbose("poller[" .. name .. "] started (" .. tostring(intervalMs) .. " ms)")
 end
 
 function P.StopNamed(name)
@@ -51,7 +63,7 @@ function P.StopNamed(name)
     if id then
         Script.KillTimer(id)
         P._ids[name] = nil
-        System.LogAlways("[MercyStrike] poller[" .. name .. "] stopped")
+        logVerbose("poller[" .. name .. "] stopped")
     end
 end
 

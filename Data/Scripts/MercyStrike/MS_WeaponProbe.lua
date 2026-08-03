@@ -185,7 +185,7 @@ local function inspectHand(player, handName, constantName)
         end
     end
 
-    MS.LogCore(string.format(
+    MS.LogManual(string.format(
         "[WeaponProbe] hand=%s constant=%s slot=%s handAvailable=%s handOk=%s handle=%s getItemAvailable=%s getItemOk=%s itemType=%s classField=%s classId=%s dbNameAvailable=%s dbNameOk=%s dbName=%s uiNameAvailable=%s uiNameOk=%s uiName=%s heavy=%s family=%s classificationSource=%s fields=%s",
         handName, constantName, clean(slot), tostring(handAvailable),
         tostring(handOk), clean(handle), tostring(getItemAvailable),
@@ -212,7 +212,7 @@ function Probe.LogDecisionSnapshot(target, targetName)
         local value, readable = safeField(target, "id")
         if readable then targetId = value end
     end
-    MS.LogCore(string.format(
+    MS.LogManual(string.format(
         "[WeaponProbe] decision target=%s targetId=%s player=%s human=%s itemManager=%s",
         tostring(targetName or "<entity>"),
         tostring(targetId),
@@ -226,7 +226,7 @@ end
 -- #ms_probe_weapon() -> one-shot equipment snapshot without requiring combat.
 function ms_probe_weapon()
     local ok, err = pcall(Probe.LogDecisionSnapshot, nil, "manual")
-    if not ok and MS.LogCore then
-        MS.LogCore("[WeaponProbe] manual error: " .. tostring(err))
+    if not ok and MS.LogError then
+        MS.LogError("[WeaponProbe] manual error: " .. tostring(err))
     end
 end
