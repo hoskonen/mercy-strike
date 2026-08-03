@@ -65,6 +65,20 @@ local function apiAvailable()
         and type(MCM.RegisterValueChangeListener) == "function"
 end
 
+-- Read-only dependency snapshot for #ms_deps().
+function MM.GetIntegrationStatus()
+    local okAssets, assets = pcall(uiAssetsAvailable)
+    local okApi, api = pcall(apiAvailable)
+    return {
+        globalAvailable = rawget(_G, "MCM") ~= nil,
+        assetsAvailable = okAssets and assets == true,
+        apiAvailable = okApi and api == true,
+        buildListenerRegistered = MM._buildRegistered == true,
+        valueListenerRegistered = MM._valueRegistered == true,
+        registered = MM._registered == true,
+    }
+end
+
 function MM.BuildSettings()
     local cfg = MS.config or {}
     MCM.AddMod(MOD_ID, MOD_NAME)

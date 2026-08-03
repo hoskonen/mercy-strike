@@ -29,6 +29,24 @@ one selection decision for that NPC during the current combat encounter.
 > tests. Mercy Strike now uses one authoritative candidate and state-machine
 > pipeline with release-oriented probability defaults.
 
+## Known Limitations
+
+- An NPC can die normally if a lethal hit reaches zero HP before Mercy Strike
+  has selected and armed that NPC. This includes an opening attack that starts
+  combat and kills immediately, or a first qualifying observed damage
+  transition that is already lethal. Several rapid attacks can also land
+  before the combat detector acquires the encounter; visible hits are not
+  necessarily observed HP transitions.
+- Mercy Strike intentionally does not run a permanent fast pre-combat poller
+  or broadly pre-arm nearby NPCs. This protects performance and avoids
+  modifying civilians without reliable combat evidence.
+- Occasionally, the unconscious-state transition does not align perfectly
+  with the NPC's animation. An NPC may become unconscious while still standing
+  or midway through a fall, producing an unintentionally funny result. This is
+  a visual timing issue; the knockout itself may still succeed normally.
+- Modded heavy weapons with new UUIDs remain neutral unless their add-on
+  registers the UUID with Mercy Strike's classifier.
+
 ## Core Systems
 
 ### Combat candidate detection
@@ -124,16 +142,17 @@ experience. All four values can be adjusted through Mod Configuration Menu.
 
 ## Configuration and Optional Integrations
 
-Mercy Strike always works from the Lua defaults in `MS_Config.lua`. Mod
-Configuration Menu and KCDUtils/LuaDB add controls and persistence without
-becoming gameplay requirements.
+Mercy Strike has no required dependencies and works fully from the built-in
+defaults in `MS_Config.lua`. Mod Configuration Menu provides in-game controls.
+KCDUtils/LuaDB adds persistence when used with the menu; neither participates
+in combat or knockout logic.
 
 | Available integration | Behavior |
 |---|---|
-| None | Lua defaults; full gameplay functionality |
-| Mod Menu only | In-game settings for the current session |
-| KCDUtils/LuaDB only | Persisted settings without an in-game menu |
-| Full stack | In-game settings with persistence |
+| None | Full gameplay using built-in defaults |
+| Mod Menu only | In-game settings for the current game run; defaults return after restarting the game |
+| KCDUtils/LuaDB only | Loads an existing saved record if present; otherwise uses defaults; no configuration interface |
+| Full stack | In-game settings with persistence across game restarts |
 
 The initial Mod Menu layout is:
 
@@ -191,6 +210,7 @@ Development console helpers are explicit and never run automatically:
 
 ```text
 #ms_help()             List every Mercy Strike console command
+#ms_deps()             Show dependency and active settings status
 #ms_dev_give_mace()    Add one full-condition spiked bludgeon for testing
 #ms_dev_give_axe()     Add one full-condition work axe for testing
 #ms_dev_show_chance()  Show the equipped weapon and current chance breakdown
@@ -209,20 +229,3 @@ memorable outcomes rather than making every NPC unconscious.
 - Continue tuning fall timing, release timing, and MercyGuard through broader
   gameplay testing.
 - Strengthen boss, quest-NPC, civilian, and special-entity safeguards.
-
-## Known Limitations
-
-- An NPC can die normally if a lethal hit reaches zero HP before Mercy Strike
-  has selected and armed that NPC. This includes an opening attack that starts
-  combat and kills immediately, or a first qualifying observed damage
-  transition that is already lethal. Several rapid attacks can also land before
-  the combat detector acquires the encounter; visible hits are not necessarily
-  observed HP transitions.
-- Mercy Strike intentionally does not run a permanent fast pre-combat poller
-  or broadly pre-arm nearby NPCs. This protects performance and avoids
-  modifying civilians without reliable combat evidence.
-- Modded heavy weapons with new UUIDs remain neutral unless their add-on
-  registers the UUID with Mercy Strike's classifier.
-- Some low-health fallback transitions can look less natural than an
-  engine-detected fall. Animation and timing polish comes after the final
-  selection logic is stable.

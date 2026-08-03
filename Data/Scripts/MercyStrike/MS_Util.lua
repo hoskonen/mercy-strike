@@ -152,11 +152,20 @@ function MS.GetEffectiveApplyChance(weaponContext)
     }
 end
 
+local function logManual(message)
+    if MercyStrike and MercyStrike.LogManual then
+        MercyStrike.LogManual(message)
+    else
+        System.LogAlways("[MercyStrike][Manual] " .. tostring(message))
+    end
+end
+
 -- #ms_help() -> list every Mercy Strike console helper.
 function ms_help()
     local lines = {
         "Mercy Strike console commands:",
         "#ms_help() - Show this command list",
+        "#ms_deps() - Show optional dependency and settings status",
         "#ms_show_cfg() - Show effective settings and logging flags",
         "#ms_reload_cfg() - Reload Lua defaults, then persisted settings",
         "#ms_debug_on() - Enable verbose and acquisition diagnostics",
@@ -169,12 +178,75 @@ function ms_help()
         "#ms_dev_give_axe() - Add a test work axe",
     }
     for i = 1, #lines do
-        if MercyStrike and MercyStrike.LogManual then
-            MercyStrike.LogManual(lines[i])
+        logManual(lines[i])
+    end
+end
+
+-- #ms_deps() -> report integration capability without changing state.
+function ms_deps()
+    local settings = {
+        kcdUtilsAvailable = false,
+        luaDbApiAvailable = false,
+        factoryAvailable = false,
+        databaseOpen = false,
+        settingsSource = "unavailable",
+    }
+    local menu = {
+        globalAvailable = false,
+        assetsAvailable = false,
+        apiAvailable = false,
+        buildListenerRegistered = false,
+        valueListenerRegistered = false,
+        registered = false,
+    }
+
+    local settingsMethod = MercyStrike and MercyStrike.Settings and
+        MercyStrike.Settings.GetIntegrationStatus
+    if type(settingsMethod) == "function" then
+        local ok, result = pcall(settingsMethod)
+        if ok and type(result) == "table" then
+            settings = result
         else
-            System.LogAlways("[MercyStrike][Manual] " .. lines[i])
+            logManual("dependency status: settings probe failed=" ..
+                tostring(result))
         end
     end
+
+    local menuMethod = MercyStrike and MercyStrike.ModMenu and
+        MercyStrike.ModMenu.GetIntegrationStatus
+    if type(menuMethod) == "function" then
+        local ok, result = pcall(menuMethod)
+        if ok and type(result) == "table" then
+            menu = result
+        else
+            logManual("dependency status: Mod Menu probe failed=" ..
+                tostring(result))
+        end
+    end
+
+    local mode = "standalone"
+    if menu.apiAvailable and settings.factoryAvailable then
+        mode = "fullStack"
+    elseif menu.apiAvailable then
+        mode = "modMenuOnly"
+    elseif settings.factoryAvailable then
+        mode = "luaDbOnly"
+    end
+
+    logManual("dependency status: mode=" .. mode)
+    logManual(string.format(
+        "ModMenu global=%s assets=%s api=%s registered=%s buildListener=%s valueListener=%s",
+        tostring(menu.globalAvailable), tostring(menu.assetsAvailable),
+        tostring(menu.apiAvailable), tostring(menu.registered),
+        tostring(menu.buildListenerRegistered),
+        tostring(menu.valueListenerRegistered)))
+    logManual(string.format(
+        "KCDUtils global=%s luaDbApi=%s factory=%s databaseOpen=%s settingsSource=%s",
+        tostring(settings.kcdUtilsAvailable),
+        tostring(settings.luaDbApiAvailable),
+        tostring(settings.factoryAvailable),
+        tostring(settings.databaseOpen),
+        tostring(settings.settingsSource)))
 end
 
 -- #ms_reload_cfg()  → reloads DEFAULT

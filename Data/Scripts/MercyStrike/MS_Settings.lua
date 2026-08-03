@@ -178,6 +178,27 @@ function Settings.GetSource()
     return Settings._source or "defaults"
 end
 
+-- Read-only dependency snapshot for #ms_deps(). It intentionally does not
+-- open a database or change the active settings source.
+function Settings.GetIntegrationStatus()
+    local kcdUtils = rawget(_G, "KCDUtils")
+    local dbApi = nil
+    local okDbApi = pcall(function()
+        dbApi = kcdUtils and kcdUtils.DB
+    end)
+    local factory = nil
+    local okFactory = pcall(function()
+        factory = okDbApi and dbApi and dbApi.Factory
+    end)
+    return {
+        kcdUtilsAvailable = kcdUtils ~= nil,
+        luaDbApiAvailable = okDbApi and dbApi ~= nil,
+        factoryAvailable = okFactory and type(factory) == "function",
+        databaseOpen = Settings._db ~= nil,
+        settingsSource = Settings.GetSource(),
+    }
+end
+
 function Settings.SaveAll(config)
     if type(config) ~= "table" then return false, "config unavailable" end
 
