@@ -173,6 +173,8 @@ function ms_help()
         "#ms_set_static(chance) - Use a fixed session chance from 0.0 to 1.0",
         "#ms_set_scaled() - Enable Warfare scaling for this session",
         "#ms_probe_weapon() - Print a detailed equipped-weapon snapshot",
+        "#ms_dev_ko_stress_on() - Enable session-only KO stress testing",
+        "#ms_dev_ko_stress_off() - Restore pre-test runtime settings",
         "#ms_dev_show_chance() - Show weapon and current chance breakdown",
         "#ms_dev_give_mace() - Add a test spiked bludgeon",
         "#ms_dev_give_axe() - Add a test work axe",
@@ -263,7 +265,7 @@ end
 function ms_show_cfg()
     local c = MercyStrike and MercyStrike.config or {}
     System.LogAlways(string.format(
-        "[MercyStrike] cfg: scale=%s base=%.2f warfareBonus=%.2f heavyBonus=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s loggingCore=%s loggingVerbose=%s loggingIntegrations=%s",
+        "[MercyStrike] cfg: scale=%s base=%.2f warfareBonus=%.2f heavyBonus=%.2f max=%.2f candidateDrop=%.2f candidateDistance=%.1f combatPollMs=%s transitionTimeoutS=%s koStress=%s loggingCore=%s loggingVerbose=%s loggingIntegrations=%s",
         tostring(c.scaleWithWarfare),
         tonumber(c.applyBaseChance or 0),
         tonumber(c.applyBonusAtCap or 0),
@@ -272,6 +274,9 @@ function ms_show_cfg()
         tonumber(c.candidateDropMin or 0),
         tonumber(c.candidateMaxDistanceM or 0),
         tostring(c.combatPollMs),
+        tostring(c.immortalityProbeTransitionAbsoluteTimeoutS),
+        tostring(MercyStrike and MercyStrike.Dev and
+            MercyStrike.Dev._koStressSnapshot ~= nil),
         tostring(c.logging and c.logging.core),
         tostring(c.logging and c.logging.verbose),
         tostring(c.logging and c.logging.integrations)

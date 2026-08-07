@@ -7,6 +7,10 @@ MercyStrike.Dev = MercyStrike.Dev or {}
 local MS = MercyStrike
 local Dev = MS.Dev
 
+-- Dev presets are intentionally runtime-only and must not survive a script
+-- reload as stale state.
+Dev._koStressSnapshot = nil
+
 local TEST_WEAPONS = {
     mace = {
         id = "007907cf-aeb9-4dfa-ad3f-e0262893e423",
@@ -88,6 +92,73 @@ function Dev.ShowChance()
     return true
 end
 
+function Dev.EnableKoStress()
+    local cfg = MS.config
+    if type(cfg) ~= "table" then
+        log("KO stress mode unavailable: config missing")
+        return false
+    end
+    if Dev._koStressSnapshot then
+        log("KO stress mode already ON")
+        return true
+    end
+
+    cfg.logging = cfg.logging or {}
+    cfg.diagnostics = cfg.diagnostics or {}
+    Dev._koStressSnapshot = {
+        applyBaseChance = cfg.applyBaseChance,
+        scaleWithWarfare = cfg.scaleWithWarfare,
+        transitionAbsoluteTimeoutS =
+            cfg.immortalityProbeTransitionAbsoluteTimeoutS,
+        loggingVerbose = cfg.logging.verbose,
+        diagnosticsAcquisition = cfg.diagnostics.acquisition,
+    }
+
+    cfg.applyBaseChance = 1.00
+    cfg.scaleWithWarfare = false
+    cfg.immortalityProbeTransitionAbsoluteTimeoutS = 300
+    cfg.logging.verbose = true
+    cfg.diagnostics.acquisition = true
+
+    log("KO stress mode ON: chance=100% transitionTimeoutS=300 " ..
+        "verbose=true acquisition=true persistence=false")
+    log("KO stress mode still requires candidate acquisition; " ..
+        "opening lethal hits can remain uncovered")
+    return true
+end
+
+function Dev.DisableKoStress()
+    local cfg = MS.config
+    local snapshot = Dev._koStressSnapshot
+    if type(cfg) ~= "table" then
+        log("KO stress mode restore failed: config missing")
+        return false
+    end
+    if type(snapshot) ~= "table" then
+        log("KO stress mode already OFF")
+        return true
+    end
+
+    cfg.logging = cfg.logging or {}
+    cfg.diagnostics = cfg.diagnostics or {}
+    cfg.applyBaseChance = snapshot.applyBaseChance
+    cfg.scaleWithWarfare = snapshot.scaleWithWarfare
+    cfg.immortalityProbeTransitionAbsoluteTimeoutS =
+        snapshot.transitionAbsoluteTimeoutS
+    cfg.logging.verbose = snapshot.loggingVerbose
+    cfg.diagnostics.acquisition = snapshot.diagnosticsAcquisition
+    Dev._koStressSnapshot = nil
+
+    log(string.format(
+        "KO stress mode OFF: restored base=%.1f%% warfareScaling=%s transitionTimeoutS=%s verbose=%s acquisition=%s",
+        (tonumber(cfg.applyBaseChance) or 0) * 100,
+        tostring(cfg.scaleWithWarfare),
+        tostring(cfg.immortalityProbeTransitionAbsoluteTimeoutS),
+        tostring(cfg.logging.verbose),
+        tostring(cfg.diagnostics.acquisition)))
+    return true
+end
+
 -- #ms_dev_give_mace()
 function ms_dev_give_mace()
     local ok, result = pcall(giveWeapon, "mace")
@@ -113,6 +184,26 @@ function ms_dev_show_chance()
     local ok, result = pcall(Dev.ShowChance)
     if not ok then
         log("show chance failed: " .. tostring(result))
+        return false
+    end
+    return result
+end
+
+-- #ms_dev_ko_stress_on()
+function ms_dev_ko_stress_on()
+    local ok, result = pcall(Dev.EnableKoStress)
+    if not ok then
+        log("KO stress enable failed: " .. tostring(result))
+        return false
+    end
+    return result
+end
+
+-- #ms_dev_ko_stress_off()
+function ms_dev_ko_stress_off()
+    local ok, result = pcall(Dev.DisableKoStress)
+    if not ok then
+        log("KO stress disable failed: " .. tostring(result))
         return false
     end
     return result

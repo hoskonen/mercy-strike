@@ -2,32 +2,70 @@
 
 ## Foreword
 
-Combat in *Kingdom Come: Deliverance II* does not always need to end in an
-immediate death. Mercy Strike is built around a simple idea: selected
-near-lethal combat outcomes should be able to become convincing unconscious
-knockouts while preserving the game's normal mercy-kill interaction. Like in the GOAT KCD1.
+Mercy Strike brings the spirit of *Kingdom Come: Deliverance*'s mercy strike
+back to *Kingdom Come: Deliverance II* as a dynamic RPG system. A defeated
+enemy may collapse unconscious instead of dying outright, leaving Henry with
+the choice to spare them or use the game's normal mercy-kill interaction.
 
-The mod aims to work with the engine rather than replace its combat
-presentation. When the conditions are right, an NPC falls through the natural
-engine transition, remains alive and unconscious, and can still be finished by
-the player.
+The outcome is shaped by Henry's Warfare skill and the weapon in his hand.
+Experienced fighters become more likely to produce knockouts, while axes and
+maces receive a distinct advantage. Mercy Strike aims to make character growth
+and weapon choice visible in combat instead of adding a fixed random KO chance.
 
 ## Overview
 
-Mercy Strike monitors nearby human combatants while the player is in combat.
-A qualifying damage transition makes an NPC a candidate. The mod then makes
-one selection decision for that NPC during the current combat encounter.
+Mercy Strike works with the game's combat systems rather than replacing them:
 
-- Selected NPCs enter the natural-down pipeline.
-- Rejected NPCs remain completely vanilla.
-- The decision is made only once per NPC per combat encounter.
-- Animals, corpses, and protected boss-like targets are excluded.
-- Fast polling runs only while it is needed.
+- **Warfare progression:** Henry's Warfare skill steadily improves the chance
+  of a Mercy Strike.
+- **Weapon identity:** recognized axes and maces gain an additional knockout
+  bonus.
+- **Natural falls:** the engine performs the downed transition; the mod does
+  not force a custom animation.
+- **Meaningful aftermath:** unconscious NPCs remain alive and eligible for the
+  vanilla mercy-kill interaction.
+- **Vanilla outcomes remain:** NPCs that are not selected are left completely
+  untouched.
+- **Optional configuration:** Mod Configuration Menu and KCDUtils/LuaDB add
+  in-game balancing and persistence without becoming requirements.
 
-> **Development status:** The core natural-down, immortality-release,
-> finisher, lifecycle, and cleanup mechanics have been proven in repeated game
-> tests. Mercy Strike now uses one authoritative candidate and state-machine
-> pipeline with release-oriented probability defaults.
+> **Experimental:** The core natural-down, finisher, lifecycle, and cleanup
+> systems have been proven through extensive testing, but this remains an
+> ambitious engine-driven mod. Please read the known limitations and report
+> unusual animation timing or NPC behavior.
+
+## Dynamic RPG System
+
+Mercy Strike uses one authoritative chance roll for each eligible NPC during a
+combat encounter. It is not a per-hit lottery, and changing weapons afterward
+does not reroll that NPC.
+
+With the default settings:
+
+- Base Mercy Strike chance is **5%**.
+- Warfare adds up to **+15 percentage points** at level 30.
+- A recognized axe or mace adds **+15 percentage points**.
+- Bonuses are additive and the final chance is capped at 100%.
+
+```text
+Mercy Strike chance = 5% + Warfare contribution + heavy-weapon bonus
+Warfare contribution = Warfare level / 30 x 15%
+Heavy-weapon bonus = +15% with a recognized axe or mace
+```
+
+| Henry's equipment and skill | Final chance |
+|---|---:|
+| Sword or other weapon, Warfare 0 | 5% |
+| Sword or other weapon, Warfare 6 | 8% |
+| Sword or other weapon, Warfare 30 | 20% |
+| Axe or mace, Warfare 0 | 20% |
+| Axe or mace, Warfare 6 | 23% |
+| Axe or mace, Warfare 30 | 35% |
+
+This keeps knockouts uncommon early in the game while allowing Henry's combat
+experience to matter. Heavy weapons begin with a meaningful advantage and
+retain it throughout progression. Unknown modded weapon IDs remain neutral
+rather than being guessed from their names.
 
 ## Known Limitations
 
@@ -47,7 +85,7 @@ one selection decision for that NPC during the current combat encounter.
 - Modded heavy weapons with new UUIDs remain neutral unless their add-on
   registers the UUID with Mercy Strike's classifier.
 
-## Core Systems
+## How Mercy Strike Works
 
 ### Combat candidate detection
 
@@ -115,31 +153,6 @@ The current polling layers are:
 - Transition monitoring only while selected NPCs are armed or releasing.
 - MercyGuard monitoring only while released unconscious NPCs need protection.
 
-## Release Defaults
-
-Mercy Strike ships with deliberately restrained defaults:
-
-- **Base Mercy Strike chance:** 5%.
-- **Warfare scaling:** enabled.
-- **Warfare bonus at level 30:** +15 percentage points.
-- **Recognized axe or mace bonus:** +15 percentage points.
-
-The chance is rolled once for each eligible NPC during a combat encounter,
-not once per hit. Bonuses are additive, and the final result is capped at
-100%.
-
-| Example | Final chance |
-|---|---:|
-| Sword, Warfare 0 | 5% |
-| Sword, Warfare 6 | 8% |
-| Sword, Warfare 30 | 20% |
-| Axe or mace, Warfare 0 | 20% |
-| Axe or mace, Warfare 30 | 35% |
-
-This keeps Mercy Strikes uncommon with swords while giving heavy weapons a
-clear identity and letting the chance grow naturally with Henry's combat
-experience. All four values can be adjusted through Mod Configuration Menu.
-
 ## Configuration and Optional Integrations
 
 Mercy Strike has no required dependencies and works fully from the built-in
@@ -166,16 +179,9 @@ Character Progression
   Warfare Bonus at Mastery       0-100%
 ```
 
-The base chance is the probability that an eligible NPC receives Mercy
-Strike's one selection decision for the encounter. When Warfare scaling is
-enabled, the configured bonus grows with Henry's Warfare skill and reaches its
-full value at Warfare 30. The bonus uses additive percentage points: a 5% base
-chance with a 15% mastery bonus produces a 20% chance at Warfare 30.
-
-The heavy weapon bonus adds percentage points when Henry has a recognized axe
-or mace in his right hand at the candidate decision. For example, a 5% base
-chance, a current 6% Warfare contribution, and a 15% heavy weapon bonus produce
-a 26% final chance. The complete result is clamped to 100%.
+The four player-facing RPG values can all be adjusted. The equipped right-hand
+weapon is captured when the candidate receives its decision, so switching
+weapons afterward does not alter or repeat the roll.
 
 Changes apply to new candidate decisions. With KCDUtils/LuaDB available, the
 complete validated record is saved globally in the `mercystrike` namespace.
@@ -211,10 +217,18 @@ Development console helpers are explicit and never run automatically:
 ```text
 #ms_help()             List every Mercy Strike console command
 #ms_deps()             Show dependency and active settings status
+#ms_dev_ko_stress_on() Select every acquired candidate and extend protection
+#ms_dev_ko_stress_off() Restore the pre-test runtime settings
 #ms_dev_give_mace()    Add one full-condition spiked bludgeon for testing
 #ms_dev_give_axe()     Add one full-condition work axe for testing
 #ms_dev_show_chance()  Show the equipped weapon and current chance breakdown
 ```
+
+KO stress mode is session-only: it selects every acquired candidate, extends
+the transition timeout to five minutes, and enables focused diagnostics. It
+does not write LuaDB or change release defaults. First-hit lethal attacks can
+still occur before candidate acquisition. Enable it before combat and disable
+it after the encounter.
 
 The two give commands intentionally modify Henry's inventory and are intended
 only for controlled development saves.
