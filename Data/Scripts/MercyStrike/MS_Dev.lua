@@ -26,6 +26,18 @@ local function log(message)
     System.LogAlways("[MercyStrike][Dev] " .. tostring(message))
 end
 
+local function restoreKoStressSnapshot(cfg, snapshot)
+    cfg.logging = cfg.logging or {}
+    cfg.diagnostics = cfg.diagnostics or {}
+    cfg.applyBaseChance = snapshot.applyBaseChance
+    cfg.scaleWithWarfare = snapshot.scaleWithWarfare
+    cfg.immortalityProbeTransitionAbsoluteTimeoutS =
+        snapshot.transitionAbsoluteTimeoutS
+    cfg.logging.verbose = snapshot.loggingVerbose
+    cfg.diagnostics.acquisition = snapshot.diagnosticsAcquisition
+    Dev._koStressSnapshot = nil
+end
+
 local function inventoryCount(inventory, itemId)
     local method = inventory and inventory.GetCountOfClass
     if type(method) ~= "function" then return nil end
@@ -139,15 +151,7 @@ function Dev.DisableKoStress()
         return true
     end
 
-    cfg.logging = cfg.logging or {}
-    cfg.diagnostics = cfg.diagnostics or {}
-    cfg.applyBaseChance = snapshot.applyBaseChance
-    cfg.scaleWithWarfare = snapshot.scaleWithWarfare
-    cfg.immortalityProbeTransitionAbsoluteTimeoutS =
-        snapshot.transitionAbsoluteTimeoutS
-    cfg.logging.verbose = snapshot.loggingVerbose
-    cfg.diagnostics.acquisition = snapshot.diagnosticsAcquisition
-    Dev._koStressSnapshot = nil
+    restoreKoStressSnapshot(cfg, snapshot)
 
     log(string.format(
         "KO stress mode OFF: restored base=%.1f%% warfareScaling=%s transitionTimeoutS=%s verbose=%s acquisition=%s",
@@ -156,6 +160,30 @@ function Dev.DisableKoStress()
         tostring(cfg.immortalityProbeTransitionAbsoluteTimeoutS),
         tostring(cfg.logging.verbose),
         tostring(cfg.diagnostics.acquisition)))
+    return true
+end
+
+function Dev.ResetSessionState(reason)
+    local snapshot = Dev._koStressSnapshot
+    if type(snapshot) ~= "table" then return true end
+
+    local cfg = MS.config
+    if type(cfg) ~= "table" then
+        Dev._koStressSnapshot = nil
+        log("KO stress mode reset by lifecycle without config reason=" ..
+            tostring(reason or "sessionReset"))
+        return false
+    end
+
+    restoreKoStressSnapshot(cfg, snapshot)
+    log(string.format(
+        "KO stress mode reset OFF by lifecycle reason=%s restored base=%.1f%% warfareScaling=%s transitionTimeoutS=%s verbose=%s acquisition=%s",
+        tostring(reason or "sessionReset"),
+        (tonumber(cfg.applyBaseChance) or 0) * 100,
+        tostring(cfg.scaleWithWarfare),
+        tostring(cfg.immortalityProbeTransitionAbsoluteTimeoutS),
+        tostring(cfg.logging and cfg.logging.verbose),
+        tostring(cfg.diagnostics and cfg.diagnostics.acquisition)))
     return true
 end
 

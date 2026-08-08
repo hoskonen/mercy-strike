@@ -1,7 +1,7 @@
 -- Scripts/MercyStrike/MS_Main.lua  (Lua 5.1)
 -- World detector (1s) + combat candidate poller (200ms)
 
-MercyStrike = MercyStrike or { version = "0.2.1" }
+MercyStrike = MercyStrike or { version = "1.0.0" }
 local MS = MercyStrike
 
 -- Load modules
@@ -1605,6 +1605,16 @@ function MS.ResetSession(source)
     MercyStrike._per = {}
     MercyStrike._transitionTimerId = nil
     MercyStrike._mercyGuardTimerId = nil
+
+    if MercyStrike.Dev and
+            type(MercyStrike.Dev.ResetSessionState) == "function" then
+        local ok, result = pcall(
+            MercyStrike.Dev.ResetSessionState,
+            "generation" .. tostring(generation) .. ":" .. source)
+        if not ok then
+            MS.LogError("[Lifecycle] dev reset error: " .. tostring(result))
+        end
+    end
 
     InitializeOptionalIntegrations()
 
