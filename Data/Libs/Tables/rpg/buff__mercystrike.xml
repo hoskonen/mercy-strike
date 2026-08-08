@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="us-ascii"?>
 <database xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="barbora" xsi:noNamespaceSchemaLocation="../database.xsd">
 	<buffs version="1">
-		<!-- Temporary feasibility probe; Lua removes this by GUID after KO or combat. -->
 		<buff buff_class_id="1" buff_exclusivity_id="1" buff_id="d4e80237-d7b6-498d-8e28-fdf2e31f3166" buff_lifetime_id="1" buff_name="buff_mercystrike_transition_protection" buff_params="imm=1" duration="-1" icon_id="0" implementation="Cpp:Constant" is_persistent="false" />
 	</buffs>
 </database>
